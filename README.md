@@ -4,17 +4,20 @@ Hybrid text RPG: an LLM interprets free-form player actions and narrates; this P
 SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `docs/contracts.md`.
 
 ## Layout
-- `rpg_engine.py` - Dan's starter, now a thin starter-compatible API + demo on top of `rpg/`
-- `rpg/schema.sql` - SQLite schema (v1, foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
+- `rpg_engine.py` - Dan's starter, now a thin API + demo on top of `rpg/`
+- `rpg/schema.sql` - SQLite schema (v2, foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
 - `rpg/db.py` - `init_db(path)`, connections, character/condition load+save
-- `rpg/rules.py` - pure 5e math and `resolve_skill_check()` (house rules in its docstring)
+- `rpg/rules.py` - pure 5e math, `resolve_skill_check()`, `resolve_attack()`, dice, HP/disposition bands
+- `rpg/inventory.py` - item helpers by key: add/remove/transfer/list/has, equip/unequip with slot conflicts
+- `rpg/actions.py` - `process_action_proposal(conn, character_id, proposal, rng=None)`: proposal -> narrator result
+- `rpg/context.py` - `build_context(conn, character_id)`: the prompt context block; narration log
 - `tests/` - pytest suite
 
 ## Run
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pytest   # stdlib only otherwise
 .venv/bin/python -m pytest -q                            # run tests
-python3 rpg_engine.py [db_path] [seed]                   # demo
+python3 rpg_engine.py [db_path] [seed]                   # demo (throwaway DB unless db_path given)
 ```
 
 ## Save file location
@@ -31,6 +34,18 @@ current directory). `saves/` and `*.db` are git-ignored.
 - **No natural 20/1 rules**: total >= DC succeeds.
 - **Raw ability checks**: pass `str`/`dex`/... (or `strength`) as the skill; no proficiency, no auto-success.
 - **Narration view**: `CheckResult.to_narration_dict()` gives outcome, degree
-  (`narrow` 0-4 / `clear` 5-9 / `overwhelming` 10+ margin), reason, flags, consequences, state
-  changes, and no numbers. Numbers go to the `rpg.debug` logger via `log_debug()`.
+  (`narrow` 0-4 / `clear` 5-9 / `overwhelming` 10+ margin; null when nothing was rolled), reason,
+  flags, consequences, state changes, and no numbers. Numbers go to the `rpg.debug` logger via `log_debug()`.
 - **HP bands**: `rules.hp_band()` returns unhurt / scratched / wounded / badly_wounded / near_death / down.
+
+## Turn API
+See `docs/contracts.md` (v0.3) for the proposal and result shapes, validation codes, DC rules and
+state changes. `process_action_proposal` writes through the connection you pass and does not commit:
+```python
+from rpg import db
+from rpg.actions import process_action_proposal
+from rpg.context import build_context
+with db.connect() as conn:            # commits on exit
+    ctx = build_context(conn, cid)    # render into the interpreter prompt
+    result = process_action_proposal(conn, cid, proposal_json)
+```
