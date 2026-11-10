@@ -39,6 +39,7 @@ BACK = "back"  # the exit leading to where you came from
 # Ways to get through something locked (an exit, or an item whose state is 'locked').
 LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
 TOOL_REQUIRED_METHODS = ("pick_lock",)
+IMPROVISED_PICK_TAG = "improvised_pick"  # e.g. a knife: picks a lock at very_hard (25)
 TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_open"))  # impossible without a tool that enables it
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
 DEATH_DESCRIPTION = "Your wounds overcome you, and you fall."
@@ -433,6 +434,11 @@ class Turn:
         dc = self.dc_for(a, t)
         if method:
             tool = effects.tool_enabling(effects.available_tools(self.conn, self.cid, a["items_used"]), method)
+            if tool is None and method == "pick_lock":
+                tool = next((i for i in inv.list_inventory(self.conn, self.cid)
+                             if IMPROVISED_PICK_TAG in (i["tags"] or [])), None)
+                if tool is not None:  # a dagger tip in the lock: possible, but very hard
+                    dc = max(dc, DIFFICULTY_DC["very_hard"])
             if tool is None and method in TOOL_REQUIRED_METHODS:
                 raise Reject("impossible_action", "needs_tool")
             if tool is not None and method in TOOL_DC_CAP:

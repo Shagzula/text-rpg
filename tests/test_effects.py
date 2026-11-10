@@ -1,4 +1,5 @@
 """NPC counterattacks, death, item effects (tonic, flash powder, light, rations, tools), timers."""
+import json
 import pytest
 
 from rpg import db, effects, rules
@@ -306,3 +307,78 @@ def test_flash_powder_angers_a_neutral_npc(world):
     r = run(world, act("use_item", target="npc_dozing_guard", items_used=["item_flash_powder"]), rng=Script(5))
     assert {"type": "npc_disposition_changed", "key": "npc_dozing_guard", "to": "hostile"} in r["results"][0]["consequences"]
     assert r["npc_actions"][0]["reason"] == "blinded"
+
+
+# --- Story Designer decisions (condition_effect, improvised picks, digit-free names) -------------
+
+def test_flash_powder_reads_condition_effect_from_content(world):
+    conn = world["conn"]
+    db.add_item_template(conn, {"id": "item_dazzle_powder", "name": "Dazzle Powder", "category": "consumable",
+                                "stats": {"effect": "condition", "condition": "dazzled", "duration": "1 round",
+                                          "condition_effect": {"no_attack": True}, "uses": 1}})
+    hostile(world)
+    give(world, "item_dazzle_powder")
+    r = run(world, act("use_item", target="npc_tall_guard", items_used=["item_dazzle_powder"]))  # no save
+    assert r["npc_actions"][0] == {"npc": "npc_tall_guard", "name": "Tall Guard", "action": "none",
+                                   "reason": "dazzled", "outcome": None, "degree": None, "hp_band": "unhurt"}
+
+
+def test_flash_powder_condition_effect_can_leave_attacks_on(world):
+    conn = world["conn"]
+    tid = conn.execute("SELECT id, stats FROM item_templates WHERE key = 'item_flash_powder'").fetchone()
+    stats = json.loads(tid["stats"])
+    stats["condition_effect"] = {"no_attack": False}
+    conn.execute("UPDATE item_templates SET stats = ? WHERE id = ?", (json.dumps(stats), tid["id"]))
+    hostile(world)
+    give(world, "item_flash_powder")
+    r = run(world, act("use_item", target="npc_tall_guard", items_used=["item_flash_powder"]), rng=Script(5, 1))
+    assert r["npc_actions"][0]["action"] == "attack"
+
+
+def test_tonic_reads_condition_effect_from_content(world):
+    conn = world["conn"]
+    db.add_item_template(conn, {"id": "item_iron_tonic", "name": "Iron Tonic", "category": "consumable",
+                                "stats": {"effect": "buff", "duration": "3 minutes", "uses": 1,
+                                          "condition_name": "ironskin",
+                                          "condition_effect": {"advantage": ["con"]}}})
+    give(world, "item_iron_tonic")
+    r = run(world, act("use_item", items_used=["item_iron_tonic"]))
+    assert "ironskin" in r["player_status"]["conditions"]
+    r = run(world, act("skill_check", skill="con", est_difficulty="easy"), rng=Script(2, 18))
+    assert r["results"][0]["outcome"] == "success"
+
+
+def test_improvised_pick_allows_lock_at_very_hard(world, caplog):
+    conn = world["conn"]
+    db.add_item_template(conn, {"id": "item_knife", "name": "Knife", "category": "weapon", "slot": "main_hand",
+                                "stats": {"damage": "1d4"}, "tags": ["improvised_pick"]})
+    inv.remove_item(conn, "item_lockpicks")
+    assert run(world, act("skill_check", skill="sleight_of_hand", target="loc_cellar"))["results"][0]["detail"] \
+        == "needs_tool"
+    give(world, "item_knife")
+    with caplog.at_level("DEBUG", logger="rpg.debug"):
+        r = run(world, act("skill_check", skill="sleight_of_hand", target="loc_cellar"), rng=Script(18))
+    res = r["results"][0]
+    assert "'dc': 25" in caplog.text and res["items_used"] == ["item_knife"]
+    assert res["outcome"] == "failure"  # 18 + 4 = 22 < 25
+
+
+def test_real_lockpicks_keep_the_authored_dc(world, caplog):
+    with caplog.at_level("DEBUG", logger="rpg.debug"):
+        run(world, act("skill_check", skill="sleight_of_hand", target="loc_cellar"), rng=Script(15))
+    assert "'dc': 18" in caplog.text
+
+
+@pytest.mark.parametrize("name", ["Coil of Rope (50 ft)", "Bundle of Arrows (20)", "Rations x3"])
+def test_item_names_with_digits_are_rejected(world, name):
+    with pytest.raises(ValueError, match="digits"):
+        db.add_item_template(world["conn"], {"id": "item_bad", "name": name, "category": "misc"})
+    with pytest.raises(ValueError, match="digits"):
+        db.add_item(world["conn"], "item_coin", character_id=world["cid"], display_name=name)
+
+
+def test_demo_rope_is_digit_free():
+    from rpg.world import TEMPLATES
+    rope = next(t for t in TEMPLATES if t["id"] == "item_rope")
+    assert rope["name"] == "Hempen Rope" and rope["stats"]["length_ft"] == 50
+    assert not any(ch.isdigit() for t in TEMPLATES for ch in t["name"])

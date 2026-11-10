@@ -27,7 +27,7 @@ TEMPLATES = [
      "stats": {"subcategory": "lever", "enables": ["force_open"],
                "skill_bonus": {"skill": "athletics", "grants": "advantage"}, "uses": None},
      "tags": ["tool", "noisy", "improvised_weapon"], "notes": "Heavy iron, bent at one end."},
-    {"id": "item_rope", "name": "Coil of Rope (50 ft)", "category": "utility", "slot": "none", "value": 10,
+    {"id": "item_rope", "name": "Hempen Rope", "category": "utility", "slot": "none", "value": 10,
      "weight": 10, "stats": {"subcategory": "climbing", "length_ft": 50,
                              "effect": "enables climbing/descending; advantage on athletics climb checks when anchored"},
      "notes": "Fifty feet of hemp."},
@@ -35,8 +35,8 @@ TEMPLATES = [
      "weight": 1, "stats": {"subcategory": "light", "effect": "light", "bright_radius_ft": 20, "dim_radius_ft": 20,
                             "duration": "1 hour", "uses": 1, "improvised_damage": "1 fire"},
      "tags": ["utility", "light", "fire"], "notes": "A pitch-soaked torch."},
-    {"id": "item_rations", "name": "Travel Rations (1 day)", "category": "consumable", "slot": "none", "value": 5,
-     "weight": 2, "stats": {"subcategory": "food", "effect": "sustenance", "uses": 1}, "tags": ["food"],
+    {"id": "item_rations", "name": "Travel Rations", "category": "consumable", "slot": "none", "value": 5,
+     "weight": 2, "stats": {"subcategory": "food", "effect": "sustenance", "uses": 1, "days": 1}, "tags": ["food"],
      "notes": "Hard bread and dried meat."},
     {"id": "item_bracing_tonic", "name": "Bracing Tonic", "category": "consumable", "slot": "belt", "value": 75,
      "weight": 0.5, "stats": {"subcategory": "buff", "effect": "buff", "buff": "advantage on next STR or CON check",
@@ -103,7 +103,7 @@ def seed_demo_slice(conn) -> int:
     db.add_item(conn, "item_healing_draught", character_id=cid)
     db.add_item(conn, "item_lockpicks", character_id=cid)
     db.add_item(conn, "item_light_source", character_id=cid, key="item_torch", display_name="Torch")
-    db.add_item(conn, "item_rations", character_id=cid, display_name="Travel Rations")
+    db.add_item(conn, "item_rations", character_id=cid)
     db.add_item(conn, "item_crowbar", location_id=square)
     db.add_item(conn, "item_bracing_tonic", location_id=square)
     db.add_item(conn, "item_hanging_lamp", location_id=store)

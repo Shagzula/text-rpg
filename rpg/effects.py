@@ -154,7 +154,21 @@ def npc_conditions(conn, npc_id) -> List[str]:
 
 
 def npc_incapacitated(conn, npc_id) -> Optional[str]:
-    return next((n for n in npc_conditions(conn, npc_id) if n in INCAPACITATING), None)
+    """Name of a condition that stops this NPC attacking: effect.no_attack, or (no explicit
+    flag) a name in INCAPACITATING."""
+    for r in conn.execute("SELECT name, effect FROM npc_conditions WHERE npc_id = ? ORDER BY id", (npc_id,)):
+        eff = json.loads(r["effect"] or "{}")
+        if eff.get("no_attack", r["name"] in INCAPACITATING):
+            return r["name"]
+    return None
+
+
+def npc_condition_effect(item: Dict, name: str) -> Dict:
+    """stats.condition_effect from content if present, else the built-in default."""
+    eff = item["stats"].get("condition_effect")
+    if isinstance(eff, dict):
+        return dict(eff)
+    return {"no_attack": name in INCAPACITATING}
 
 
 def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: int) -> Dict:
@@ -176,7 +190,7 @@ def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: in
         turns = rules.duration_turns(s.get("duration")) or 1
         conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (npc["id"], name))
         conn.execute("INSERT INTO npc_conditions (npc_id, name, effect, duration_turns, source) VALUES (?, ?, ?, ?, ?)",
-                     (npc["id"], name, json.dumps({"no_attack": name in INCAPACITATING}), turns, item["key"]))
+                     (npc["id"], name, json.dumps(npc_condition_effect(item, name)), turns, item["key"]))
     return {"type": "npc_condition", "key": npc["key"], "npc_name": npc["name"], "name": name,
             "outcome": "resisted" if resisted else "applied"}
 

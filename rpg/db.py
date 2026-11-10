@@ -11,7 +11,7 @@ from typing import Dict, Iterator, Optional, Union
 
 from .rules import ABILITIES, Character, CheckResult, Condition, normalize_skill
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Columns added after v2; older saves get them via ALTER TABLE on open.
 MIGRATION_COLUMNS = [
@@ -20,6 +20,7 @@ MIGRATION_COLUMNS = [
     ("npcs", "attack_bonus", "INTEGER NOT NULL DEFAULT 2"),
     ("npcs", "damage", "TEXT NOT NULL DEFAULT '1d4'"),
     ("npcs", "save_bonus", "INTEGER NOT NULL DEFAULT 0"),
+    ("characters", "gold", "INTEGER NOT NULL DEFAULT 0 CHECK (gold >= 0)"),  # v4
 ]
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -71,7 +72,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
-    elif int(row[0]) == 2:
+    elif int(row[0]) in (2, 3):
         _migrate_v2(conn)
     elif int(row[0]) != SCHEMA_VERSION:
         raise RuntimeError(f"Unsupported schema_version {row[0]} (expected {SCHEMA_VERSION})")
@@ -79,10 +80,11 @@ def create_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v2(conn) -> None:
-    """v2 -> v3: new tables come from the schema script; add the new columns."""
+    """v2/v3 -> current: new tables come from the schema script; add any missing columns.
+    (npcs.disposition has been an INTEGER -100..100 since v1: nothing to convert.)"""
     for table, col, ddl in MIGRATION_COLUMNS:
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        if col not in cols:
+        if cols and col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
     conn.execute("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
 
@@ -221,6 +223,7 @@ def apply_check_consequences(conn, character_id: int, result: CheckResult) -> Ch
 def add_item_template(conn, tpl: Dict) -> int:
     """Insert a template from the content shape (items_tier1.yaml / contracts.md (c)).
     Content `id` -> `key`, `notes` -> `description`, `subcategory` -> stats.subcategory."""
+    validate_item_name(tpl["name"])
     stats = dict(tpl.get("stats") or {})
     if tpl.get("subcategory") is not None:
         stats["subcategory"] = tpl["subcategory"]
@@ -232,6 +235,13 @@ def add_item_template(conn, tpl: Dict) -> int:
          json.dumps(tpl.get("tags") or []), tpl.get("description") or tpl.get("notes")),
     )
     return cur.lastrowid
+
+
+def validate_item_name(name: str) -> None:
+    """Item names carry no digits (quantities live in stats, e.g. length_ft); narration
+    must stay number-free."""
+    if any(ch.isdigit() for ch in str(name)):
+        raise ValueError(f"Item name {name!r} contains digits; move quantities into stats")
 
 
 def next_item_key(conn, base: str) -> str:
@@ -254,6 +264,8 @@ def add_item(conn, template_key: str, *, character_id: Optional[int] = None,
     row = conn.execute("SELECT id FROM item_templates WHERE key = ?", (template_key,)).fetchone()
     if row is None:
         raise ValueError(f"Unknown item template {template_key!r}")
+    if display_name is not None:
+        validate_item_name(display_name)
     if key is None:
         key = next_item_key(conn, template_key)
     cur = conn.execute(
