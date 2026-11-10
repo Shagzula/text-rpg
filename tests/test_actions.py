@@ -366,7 +366,7 @@ def test_antidote_cures_condition(world):
 def test_tool_with_skill_on_exit_is_a_check(world):
     r = run(world, act("take", target="item_crowbar"),
             act("use_item", skill="athletics", target="loc_cellar", items_used=["item_crowbar"], last_ditch=True),
-            rng=Script(15))
+            rng=Script(15, 3))  # crowbar: advantage on athletics -> keep 15
     pry = r["results"][1]
     assert pry["reason"] == "last_ditch" and pry["outcome"] == "success"
     assert pry["state_changes"][0]["type"] == "exit_state"
@@ -377,7 +377,7 @@ def test_tool_with_skill_on_exit_is_a_check(world):
 def test_attack_finesse_uses_better_ability_and_proficiency(world, caplog):
     with caplog.at_level("DEBUG", logger="rpg.debug"):
         r = run(world, act("attack", skill="str", target="npc_dozing_guard", items_used=["item_rusty_shortsword"]),
-                rng=Script(4, 1))  # 4 + DEX 2 + PB 2 = 8 vs DC 8; damage 1 + 2 = 3
+                rng=Script(4, 1, 1))  # 4 + DEX 2 + PB 2 = 8 vs DC 8; damage 1 + 2 = 3; guard's counterattack misses
     [a] = r["results"]
     assert a["ability"] == "dex" and a["outcome"] == "success" and a["degree"] == "narrow"
     assert "'modifier': 4" in caplog.text and "'damage': 3" in caplog.text
@@ -400,7 +400,7 @@ def test_attack_kills_and_then_target_defeated(world):
 
 def test_attack_miss_angers_target(world):
     [a] = run(world, act("attack", target="npc_tall_guard", items_used=["item_rusty_shortsword"]),
-              rng=Script(2))["results"]
+              rng=Script(2, 1))["results"]  # miss; the angered guard's counterattack misses
     assert a["outcome"] == "failure" and a["consequences"] == [
         {"type": "npc_disposition_changed", "key": "npc_tall_guard", "to": "hostile"}]
     [r] = run(world, act("rest"))["results"]
@@ -410,13 +410,13 @@ def test_attack_miss_angers_target(world):
 def test_attack_unproficient_martial_uses_str(world, caplog):
     with caplog.at_level("DEBUG", logger="rpg.debug"):
         [a] = run(world, act("attack", target="npc_tall_guard", items_used=["item_heavy_blade"]),
-                  rng=Script(10))["results"]
+                  rng=Script(10, 1))["results"]
     assert a["ability"] == "str" and "'modifier': -1" in caplog.text and a["outcome"] == "failure"
 
 
 def test_unarmed_attack_str_proficient(world, caplog):
     with caplog.at_level("DEBUG", logger="rpg.debug"):
-        [a] = run(world, act("attack", target="npc_dozing_guard"), rng=Script(7))["results"]
+        [a] = run(world, act("attack", target="npc_dozing_guard"), rng=Script(7, 1))["results"]
     assert a["ability"] == "str" and "'modifier': 1" in caplog.text and a["outcome"] == "success"  # -1 + 2
 
 
@@ -457,7 +457,8 @@ def test_talk_with_social_skill_rolls(world):
 def test_defeat_when_down(world):
     world["conn"].execute("UPDATE characters SET current_hp = 0 WHERE id = ?", (world["cid"],))
     r = run(world, act("wait"))
-    assert r["player_status"]["hp_band"] == "down" and r["defeat"]["type"] == "knocked_out"
+    assert r["player_status"]["hp_band"] == "down" and r["defeat"]["type"] == "death"
+    assert r["results"] == [] and r["turn"] is None  # the dead take no actions
 
 
 def test_result_envelope_and_no_numbers_anywhere(world):

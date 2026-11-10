@@ -23,6 +23,7 @@ House rules (from DESIGN.md), all tunable via the constants below:
   of each cancels out to a single straight roll. Sources: conditions
   (effect "advantage"/"disadvantage": lists of abilities or skills), tools
   (skill_bonus grants: advantage), darkness (perception/investigation).
+  Disadvantage also rules out auto-success (you must roll).
 * Attacks (resolve_attack): same pipeline vs the target's defense DC, with
   modifier = STR/DEX mod (+ PB if proficient) + conditions; never auto-succeed.
 """
@@ -335,7 +336,7 @@ def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_
         )
 
     # 1. Auto-success: proficient, reasonable DC, and taking 10 clears it.
-    if can_auto and dc <= AUTO_SUCCESS_MAX_DC and 10 + mod >= dc:
+    if can_auto and adv >= 0 and dc <= AUTO_SUCCESS_MAX_DC and 10 + mod >= dc:
         return result(True, auto=True, reason="auto_success")
 
     # 2. Last-ditch: desperation bonus, always costs a lasting condition.

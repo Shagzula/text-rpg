@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db, rules
+from . import db, effects, rules
 from . import inventory as inv
 from .context import npc_hp
 from .inventory import ItemError
@@ -28,6 +28,11 @@ MAX_ACTIONS = 3
 VALIDATION_CODES = ("item_not_owned", "target_not_present", "item_unusable", "out_of_reach", "impossible_action")
 IMPROVISED_DAMAGE = "1d4"
 UNARMED_DAMAGE = "1"
+# Ways to get through something locked (an exit, or an item whose state is 'locked').
+LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
+TOOL_REQUIRED_METHODS = ("pick_lock",)  # impossible without a tool that enables it
+TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
+DEATH_DESCRIPTION = "Your wounds overcome you, and you fall."
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +168,7 @@ class Reject(Exception):
 class Turn:
     def __init__(self, conn, character_id: int, rng: random.Random, turn: int):
         self.conn, self.cid, self.rng, self.turn = conn, character_id, rng, turn
+        self.pending: List[Dict] = []  # extra consequences from the last check (tools, spent buffs)
 
     # -- state --------------------------------------------------------------
     @property
@@ -224,6 +230,8 @@ class Turn:
         r = {"action_type": a["action_type"], "intent_summary": a["intent_summary"],
              "target": target.ref() if isinstance(target, Target) else target,
              "items_used": list(a["items_used"]), "status": status}
+        consequences = list(consequences) + self.pending
+        self.pending = []
         if check is not None:
             r.update(check.to_narration_dict(list(state_changes)))
             r["consequences"] += list(consequences)
@@ -248,11 +256,29 @@ class Turn:
             "state_changes": []}
         return r
 
-    def check(self, a, skill: str, dc: int) -> rules.CheckResult:
+    @property
+    def lit(self) -> bool:
+        return effects.location_is_lit(self.conn, self.loc_id, self.cid)
+
+    def check(self, a, skill: str, dc: int, *, method: Optional[str] = None) -> rules.CheckResult:
+        """Resolve a check with situational advantage: relevant tools (skill_bonus grants
+        advantage) and darkness (sight skills at disadvantage). Conditions are applied by
+        the rules layer. One-check buffs for this ability are spent afterwards."""
         char = db.load_character(self.conn, self.cid)
-        res = rules.resolve_skill_check(char, skill, dc, last_ditch=a["last_ditch"], roller=self.roller)
+        sk, ab = rules.split_check(skill)
+        tools = effects.tool_advantage(effects.available_tools(self.conn, self.cid, a["items_used"]),
+                                       sk, method, a["items_used"])
+        dark = sk in effects.DARK_SKILLS and not self.lit
+        res = rules.resolve_skill_check(char, skill, dc, last_ditch=a["last_ditch"], roller=self.roller,
+                                        advantage=bool(tools), disadvantage=dark)
         db.apply_check_consequences(self.conn, self.cid, res)
-        res.log_debug(turn=self.turn, action=a["action_type"], intent=a["intent_summary"])
+        res.log_debug(turn=self.turn, action=a["action_type"], intent=a["intent_summary"], method=method,
+                      tools=[t["key"] for t in tools], dark=dark)
+        self.pending += [{"type": "tool_used", "key": t["key"], "name": t["name"]} for t in tools]
+        if dark:
+            self.pending.append({"type": "darkness", "description": "hard to see in the dark"})
+        if res.roll is not None or res.auto_success:
+            self.pending += effects.expire_after_check(self.conn, self.cid, sk, ab)
         return res
 
     def dc_for(self, a, target: Optional[Target]) -> int:
@@ -299,6 +325,9 @@ class Turn:
     def do_examine(self, a, t):
         for k in a["items_used"]:
             self.item(k, reach=False)
+        held = t is not None and (t.kind == "self" or (t.kind == "item" and t.row["character_id"] == self.cid))
+        if not a["skill"] and not held and not self.lit:
+            raise Reject("impossible_action", "too_dark")  # searching (a skill) is allowed, at disadvantage
         target = t.ref() if t else None
         if t is not None:
             target["description"] = self._describe(t)
@@ -354,11 +383,27 @@ class Turn:
     def do_skill_check(self, a, t):
         for k in a["items_used"]:
             self.item(k)
-        check = self.check(a, a["skill"], self.dc_for(a, t))
+        locked = t is not None and ((t.kind == "exit" and t.row["locked"]) or
+                                    (t.kind == "item" and t.row.get("state") == "locked"))
+        method = LOCK_METHODS.get(a["skill"]) if locked else None
+        dc = self.dc_for(a, t)
+        if method:
+            tool = effects.tool_enabling(effects.available_tools(self.conn, self.cid, a["items_used"]), method)
+            if tool is None and method in TOOL_REQUIRED_METHODS:
+                raise Reject("impossible_action", "needs_tool")
+            if tool is not None and method in TOOL_DC_CAP:
+                dc = min(dc, TOOL_DC_CAP[method])
+            if tool is not None and tool["key"] not in a["items_used"]:
+                a = {**a, "items_used": a["items_used"] + [tool["key"]]}  # the held tool is the one used
+        check = self.check(a, a["skill"], dc, method=method)
         changes = []
-        if check.success and t is not None and t.kind == "exit" and t.row["locked"]:
-            changes += self._unlock(t)
+        if check.success and method:
+            changes += self._unlock(t) if t.kind == "exit" else self._open_item(t)
         return self.result(a, target=t, check=check, state_changes=changes)
+
+    def _open_item(self, t: Target) -> List[Dict]:
+        self.conn.execute("UPDATE items SET state = 'open' WHERE key = ?", (t.key,))
+        return [{"type": "entity_state", "key": t.key, "field": "state", "from": "locked", "to": "open"}]
 
     def do_other(self, a, t):
         if a["skill"]:
@@ -376,14 +421,20 @@ class Turn:
         return [{"type": "exit_state", "key": t.key, "direction": t.row["direction"], "from": "locked", "to": "open"}]
 
     def do_rest(self, a, t):
+        """Rest heals half the missing HP (rounded up) and clears non-lasting conditions.
+        Eating a ration while resting (one is consumed if held) heals to full instead."""
         for n in self.conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1", (self.loc_id,)):
             if rules.disposition_band(n["disposition"]) == "hostile":
                 raise Reject("impossible_action", "enemies_present")
         ch = self.char_row
         cons = []
+        ration = next((i for i in inv.list_inventory(self.conn, self.cid)
+                       if i["stats"].get("effect") == "sustenance"), None)
+        if ration is not None:
+            cons += self._consume(ration)
         missing = ch["max_hp"] - ch["current_hp"]
         if missing > 0:
-            new = ch["current_hp"] + math.ceil(missing / 2)
+            new = ch["max_hp"] if ration is not None else ch["current_hp"] + math.ceil(missing / 2)
             self.conn.execute("UPDATE characters SET current_hp = ? WHERE id = ?", (new, self.cid))
             cons.append({"type": "healed", "target": "self", "hp_band": rules.hp_band(new, ch["max_hp"])})
         for r in self.conn.execute("SELECT id, name FROM character_conditions WHERE character_id = ? AND lasting = 0",
@@ -473,8 +524,15 @@ class Turn:
         stats = item["stats"]
         effect = stats.get("effect")
         # A tool on something (crowbar on a door) with a skill is a skill check.
-        if a["skill"] and effect not in ("heal", "cure_condition") and not (t and t.key == item["key"]):
+        if a["skill"] and effect not in ("heal", "cure_condition", "condition") and not (t and t.key == item["key"]):
             return self.do_skill_check(a, t)
+        if effect == "light":
+            if item["character_id"] != self.cid:
+                raise Reject("item_not_owned", "light_not_held")
+            change = effects.light(self.conn, item)
+            return self.result(a, target={"key": item["key"], "name": item["name"]}, state_changes=[change])
+        if effect == "condition":  # thrown at NPCs: flash powder
+            return self._use_condition_item(a, t, item)
         check = None
         if isinstance(stats.get("check"), dict):  # e.g. bandages need a medicine check
             spec = stats["check"]
@@ -488,6 +546,8 @@ class Turn:
             new = min(ch["max_hp"], ch["current_hp"] + max(0, rules.roll_dice(stats.get("amount", "1"), self.rng)))
             self.conn.execute("UPDATE characters SET current_hp = ? WHERE id = ?", (new, self.cid))
             cons.append({"type": "healed", "target": "self", "hp_band": rules.hp_band(new, ch["max_hp"])})
+        elif effect == "buff":
+            cons.append(effects.apply_buff(self.conn, self.cid, item))
         elif effect == "cure_condition":
             name = stats.get("condition")
             rows = self.conn.execute("SELECT id, name FROM character_conditions WHERE character_id = ? AND name = ?",
@@ -499,16 +559,41 @@ class Turn:
             db.set_flag(self.conn, stats["use_sets_flag"], True)
             changes.append({"type": "flag_set", "key": stats["use_sets_flag"], "value": True})
         if stats.get("uses") is not None:
-            used_up = inv.consume_use(self.conn, item["key"])
-            if used_up:
-                cons.append({"type": "item_consumed", "key": item["key"], "name": item["name"],
-                             "description": f"{item['name']} used up"})
-                if inv.get_item(self.conn, item["key"]) is None:
-                    changes.append({"type": "item_removed", "key": item["key"], "name": item["name"]})
-            else:
-                cons.append({"type": "item_used", "key": item["key"], "name": item["name"],
-                             "description": f"{item['name']} has uses left"})
+            for c in self._consume(item):
+                (changes if c["type"] == "item_removed" else cons).append(c)
         return self.result(a, target=t or {"key": item["key"], "name": item["name"]}, check=check,
+                           consequences=cons, state_changes=changes)
+
+    def _consume(self, item) -> List[Dict]:
+        out = []
+        if inv.consume_use(self.conn, item["key"]):
+            out.append({"type": "item_consumed", "key": item["key"], "name": item["name"],
+                        "description": f"{item['name']} used up"})
+            if inv.get_item(self.conn, item["key"]) is None:
+                out.append({"type": "item_removed", "key": item["key"], "name": item["name"]})
+        else:
+            out.append({"type": "item_used", "key": item["key"], "name": item["name"],
+                        "description": f"{item['name']} has uses left"})
+        return out
+
+    def _use_condition_item(self, a, t, item):
+        """An item that inflicts a condition on NPCs (stats.condition, stats.save). Aimed at
+        one NPC, or with no NPC target, at every living NPC here (an area burst). Each NPC
+        saves; the item is consumed either way."""
+        if t is not None and t.kind == "npc":
+            if not t.row["alive"]:
+                raise Reject("impossible_action", "target_defeated")
+            npcs = [t.row]
+        elif t is None or t.kind in ("self", "location") or t.key == item["key"]:
+            npcs = [dict(r) for r in self.conn.execute(
+                "SELECT * FROM npcs WHERE location_id = ? AND alive = 1 AND out_of_reach = 0", (self.loc_id,))]
+        else:
+            raise Reject("impossible_action", "not_a_creature")
+        cons = [effects.npc_save_condition(self.conn, n, item, self.rng, self.turn) for n in npcs]
+        changes = []
+        for c in self._consume(item):
+            (changes if c["type"] == "item_removed" else cons).append(c)
+        return self.result(a, target=t if t is not None and t.kind == "npc" else {"key": item["key"], "name": item["name"]},
                            consequences=cons, state_changes=changes)
 
     # combat ------------------------------------------------------------------
@@ -540,11 +625,14 @@ class Turn:
         char = db.load_character(self.conn, self.cid)
         ability, proficient = self._attack_ability(a, char, weapon, improvised, props)
         dc = t.row["defense_dc"] if t.kind == "npc" else self.dc_for(a, t)
+        helpless = t.kind == "npc" and effects.npc_incapacitated(self.conn, t.row["id"])
         res = rules.resolve_attack(char, ability, dc, proficient=proficient, last_ditch=a["last_ditch"],
-                                   roller=self.roller)
+                                   roller=self.roller, advantage=bool(helpless))
         db.apply_check_consequences(self.conn, self.cid, res)
-        res.log_debug(turn=self.turn, action="attack", target=t.key)
+        res.log_debug(turn=self.turn, action="attack", target=t.key, target_condition=helpless or None)
         cons, changes = [], []
+        if res.roll is not None:
+            self.pending += effects.expire_after_check(self.conn, self.cid, None, ability)
         if t.kind == "npc":
             if res.success:
                 if weapon is None:
@@ -639,7 +727,11 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     if conn.execute("SELECT 1 FROM characters WHERE id = ?", (character_id,)).fetchone() is None:
         raise ValueError(f"Character {character_id} not found")
 
-    turn = Turn(conn, character_id, rng or random.Random(), _next_turn(conn, character_id))
+    rng = rng or random.Random()
+    if conn.execute("SELECT current_hp FROM characters WHERE id = ?", (character_id,)).fetchone()[0] <= 0:
+        return {"turn": None, "results": [], "player_status": player_status(conn, character_id), "dialogue": [],
+                "npc_actions": [], "expired": [], "defeat": death(), "clarification_question": None}
+    turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     actions = prop["actions"]
     results: List[Dict] = []
     skipped: List[Dict] = []
@@ -668,15 +760,24 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
             if r["status"] == "resolved" and r["outcome"] == "failure":
                 failed.append(a)
 
+    npc_actions: List[Dict] = []
+    expired: List[Dict] = []
+    # Time passes (NPCs act, timers tick) only if some action actually resolved; turns that
+    # were all rejected or clarification requests cost nothing.
+    if any(r["status"] == "resolved" for r in results):
+        npc_actions = effects.npc_phase(conn, character_id, rng, turn.turn)
+        expired = effects.tick(conn, character_id)
     status = player_status(conn, character_id)
-    defeat = None
-    if status["hp_band"] == "down":
-        defeat = {"type": "knocked_out", "description": "You collapse."}
+    defeat = death() if status["hp_band"] == "down" else None
     out = {"turn": turn.turn, "results": results, "player_status": status, "dialogue": [],
-           "defeat": defeat, "clarification_question": question}
+           "npc_actions": npc_actions, "expired": expired, "defeat": defeat, "clarification_question": question}
     if skipped:
         out["skipped"] = skipped
     return out
+
+
+def death() -> Dict:
+    return {"type": "death", "description": DEATH_DESCRIPTION}
 
 
 def _skip(a, reason):

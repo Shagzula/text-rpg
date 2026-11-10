@@ -316,3 +316,9 @@ def _eq(slot, **stats):
 ])
 def test_armor_defense(dex, equipped, ac):
     assert rules.armor_defense(dex, equipped) == ac
+
+
+def test_disadvantage_rules_out_auto_success():
+    c = make(level=3, skills={"athletics": "proficient"})
+    r = resolve_skill_check(c, "athletics", 10, disadvantage=True, roller=fixed(15, 2))
+    assert not r.auto_success and r.roll == 2

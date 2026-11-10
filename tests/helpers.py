@@ -25,7 +25,21 @@ TEMPLATES = [
     {"id": "item_antidote", "name": "Antidote Vial", "category": "consumable", "slot": "belt",
      "stats": {"effect": "cure_condition", "condition": "poisoned", "uses": 1}},
     {"id": "item_crowbar", "name": "Crowbar", "category": "tool", "slot": "none",
-     "stats": {"enables": ["force_open"]}},
+     "stats": {"enables": ["force_open"], "skill_bonus": {"skill": "athletics", "grants": "advantage"}}},
+    {"id": "item_lockpicks", "name": "Lockpicks", "category": "tool", "slot": "belt",
+     "stats": {"enables": ["pick_lock", "disarm_trap"],
+               "skill_bonus": {"skill": "sleight_of_hand", "grants": "required_for_check"}, "uses": None}},
+    {"id": "item_rations", "name": "Rations", "category": "consumable", "slot": "none",
+     "stats": {"effect": "sustenance", "uses": 1}},
+    {"id": "item_bracing_tonic", "name": "Bracing Tonic", "category": "consumable", "slot": "belt",
+     "stats": {"effect": "buff", "buff": "advantage on next STR or CON check", "duration": "10 minutes or 1 check",
+               "uses": 1, "side_effect": "disadvantage on WIS checks for duration"}},
+    {"id": "item_flash_powder", "name": "Flash Powder", "category": "consumable", "slot": "belt",
+     "stats": {"effect": "condition", "condition": "blinded", "duration": "1 round", "area": "10 ft",
+               "save": {"ability": "con", "est_difficulty": "medium"}, "uses": 1}},
+    {"id": "item_light_source", "name": "Torch", "category": "utility", "slot": "off_hand",
+     "stats": {"effect": "light", "bright_radius_ft": 20, "duration": "1 hour", "uses": 1,
+               "improvised_damage": "1 fire"}},
     {"id": "item_coin", "name": "Coin", "category": "misc", "slot": "none", "stats": {}},
     {"id": "item_hanging_lamp", "name": "Hanging lamp", "category": "utility", "slot": "none",
      "stats": {}, "tags": ["fixture"]},
@@ -65,6 +79,7 @@ def build_world(conn, *, str_score=8, dex=14, level=1, hp=10, skills=None):
     db.add_item(conn, "item_buckler", character_id=cid)
     db.add_item(conn, "item_heavy_blade", character_id=cid)
     db.add_item(conn, "item_coin", character_id=cid, quantity=5, key="item_coins")
+    db.add_item(conn, "item_lockpicks", character_id=cid)
     db.add_item(conn, "item_hanging_lamp", location_id=store)
     db.add_item(conn, "item_lever", location_id=store)
     db.add_item(conn, "item_crowbar", location_id=store)
