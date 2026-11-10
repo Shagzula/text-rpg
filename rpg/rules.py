@@ -18,12 +18,15 @@ House rules (from DESIGN.md), all tunable via the constants below:
 * Raw ability checks: pass an ability ('str', 'dex', ..., or 'strength') as
   the skill. No proficiency applies, so they never auto-succeed.
 * Degree band (narration): |margin| 0-4 narrow, 5-9 clear, 10+ overwhelming.
-  Auto-success -> clear; impossible (no roll) -> overwhelming failure.
+  null whenever nothing was rolled (auto-success, impossible without a roll).
+* Attacks (resolve_attack): same pipeline vs the target's defense DC, with
+  modifier = STR/DEX mod (+ PB if proficient) + conditions; never auto-succeed.
 """
 from __future__ import annotations
 
 import logging
 import random
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -189,12 +192,8 @@ class CheckResult:
         return "success" if self.success else "failure"
 
     @property
-    def degree(self) -> str:
-        if self.auto_success:
-            return "clear"
-        if self.margin is None:  # impossible, never rolled
-            return "overwhelming"
-        return degree_band(self.margin)
+    def degree(self) -> Optional[str]:
+        return None if self.margin is None else degree_band(self.margin)  # None = no roll
 
     def to_narration_dict(self, state_changes: Optional[List[Dict]] = None) -> Dict:
         """Narrator-safe view: no roll/dc/modifier/bonus/total/margin/needed_roll."""
@@ -257,8 +256,31 @@ def resolve_skill_check(
     Pure: returns consequences, does not persist them."""
     skill, ability = split_check(skill, ability)
     mod = skill_modifier(char, skill or ability, ability)
+    return resolve_check(skill, ability, dc, mod, can_auto=bool(char.proficiency(skill)),
+                         last_ditch=last_ditch, roller=roller or _default_roller(rng))
+
+
+def resolve_attack(
+    char: Character,
+    ability: str,
+    defense_dc: int,
+    *,
+    proficient: bool,
+    last_ditch: bool = False,
+    roller: Optional[Roller] = None,
+    rng: Optional[random.Random] = None,
+) -> CheckResult:
+    """Attack check vs a defense DC. Same impossibility/last-ditch rules; no auto-success."""
+    ability = normalize_ability(ability)
+    mod = skill_modifier(char, ability) + (proficiency_bonus(char.level) if proficient else 0)
+    return resolve_check(None, ability, defense_dc, mod, can_auto=False,
+                         last_ditch=last_ditch, roller=roller or _default_roller(rng))
+
+
+def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_auto: bool,
+                  last_ditch: bool, roller: Roller) -> CheckResult:
+    """Core rules pipeline shared by skill checks and attacks."""
     needed = dc - mod  # d20 result needed on a normal roll
-    roll_d20 = roller or _default_roller(rng)
 
     def result(success, *, auto=False, impossible=False, ld=False, roll=None,
                bonus=0, reason="", consequences=()):
@@ -271,7 +293,7 @@ def resolve_skill_check(
         )
 
     # 1. Auto-success: proficient, reasonable DC, and taking 10 clears it.
-    if char.proficiency(skill) and dc <= AUTO_SUCCESS_MAX_DC and 10 + mod >= dc:
+    if can_auto and dc <= AUTO_SUCCESS_MAX_DC and 10 + mod >= dc:
         return result(True, auto=True, reason="auto_success")
 
     # 2. Last-ditch: desperation bonus, always costs a lasting condition.
@@ -282,7 +304,7 @@ def resolve_skill_check(
             return result(False, impossible=True, ld=True, bonus=bonus,
                           reason="impossible_even_last_ditch",
                           consequences=[{"type": "condition", **asdict(cost)}])
-        roll = roll_d20()
+        roll = roller()
         success = roll + mod + bonus >= dc
         cost = last_ditch_cost(ability, success, skill)
         return result(success, ld=True, roll=roll, bonus=bonus, reason="last_ditch",
@@ -293,5 +315,44 @@ def resolve_skill_check(
         return result(False, impossible=True, reason="impossible")
 
     # 4. Normal roll. No natural-20/natural-1 special cases.
-    roll = roll_d20()
+    roll = roller()
     return result(roll + mod >= dc, roll=roll, reason="rolled")
+
+
+# ---------------------------------------------------------------------------
+# Dice and bands
+# ---------------------------------------------------------------------------
+
+_DICE_RE = re.compile(r"^\s*(?:(\d*)d(\d+))?\s*([+-]\s*\d+)?\s*$")
+
+
+def roll_dice(expr, rng: Optional[random.Random] = None) -> int:
+    """Roll '2d4+2', '1d6', 'd8', '3', '1 fire' (leading number). Returns the total."""
+    r = rng or random.Random()
+    if isinstance(expr, int):
+        return expr
+    text = str(expr).strip()
+    m = _DICE_RE.match(text)
+    if not m or (m.group(2) is None and m.group(3) is None):
+        lead = re.match(r"^\s*(\d+)", text)
+        if not lead:
+            raise ValueError(f"Bad dice expression {expr!r}")
+        return int(lead.group(1))
+    total = 0
+    if m.group(2):
+        n = int(m.group(1) or 1)
+        total += sum(r.randint(1, int(m.group(2))) for _ in range(n))
+    if m.group(3):
+        total += int(m.group(3).replace(" ", ""))
+    return total
+
+
+def disposition_band(value: int) -> str:
+    """hostile <= -50 < unfriendly <= -10 < neutral < 10 <= friendly < 50 <= allied."""
+    if value <= -50:
+        return "hostile"
+    if value <= -10:
+        return "unfriendly"
+    if value < 10:
+        return "neutral"
+    return "friendly" if value < 50 else "allied"

@@ -179,9 +179,51 @@ def test_degree_failure_overwhelming():
     assert r.degree == "overwhelming"
 
 
-def test_degree_auto_and_impossible():
-    assert resolve_skill_check(make(level=3, skills={"athletics": "proficient"}), "athletics", 10).degree == "clear"
-    assert resolve_skill_check(make(), "athletics", 25, roller=never()).degree == "overwhelming"
+def test_degree_null_without_roll():
+    auto = resolve_skill_check(make(level=3, skills={"athletics": "proficient"}), "athletics", 10)
+    imp = resolve_skill_check(make(), "athletics", 25, roller=never())
+    ld_imp = resolve_skill_check(make(), "athletics", 40, last_ditch=True, roller=never())
+    assert auto.degree is None and imp.degree is None and ld_imp.degree is None
+    assert auto.to_narration_dict()["degree"] is None
+    assert auto.auto_success and imp.impossible and ld_imp.impossible and ld_imp.last_ditch
+
+
+def test_resolve_attack_uses_pb_when_proficient_and_never_auto():
+    c = make(level=5, dex=16)  # +3, PB +3
+    r = rules.resolve_attack(c, "dex", 8, proficient=True, roller=fixed(1))
+    assert r.modifier == 6 and not r.auto_success and r.roll == 1 and not r.success  # 7 < 8
+    r = rules.resolve_attack(c, "dex", 8, proficient=False, roller=fixed(5))
+    assert r.modifier == 3 and r.success
+
+
+def test_resolve_attack_impossible_and_last_ditch():
+    c = make(str=8)
+    r = rules.resolve_attack(c, "str", 25, proficient=False, roller=never())
+    assert r.impossible and r.degree is None
+    r = rules.resolve_attack(c, "str", 20, proficient=False, last_ditch=True, roller=fixed(16))
+    assert r.success and r.consequences[0]["name"] == "strained_str"
+
+
+@pytest.mark.parametrize("expr,lo,hi", [("1d6", 1, 6), ("2d4+2", 4, 10), ("d8", 1, 8),
+                                        ("1d4-1", 0, 3), ("3", 3, 3), ("1 fire", 1, 1), (2, 2, 2)])
+def test_roll_dice(expr, lo, hi):
+    rng = random.Random(0)
+    vals = {rules.roll_dice(expr, rng) for _ in range(200)}
+    assert min(vals) >= lo and max(vals) <= hi
+    if lo != hi:
+        assert min(vals) == lo and max(vals) == hi
+
+
+def test_roll_dice_rejects_garbage():
+    with pytest.raises(ValueError):
+        rules.roll_dice("lots")
+
+
+@pytest.mark.parametrize("v,band", [(-100, "hostile"), (-50, "hostile"), (-49, "unfriendly"),
+                                    (-10, "unfriendly"), (-9, "neutral"), (0, "neutral"),
+                                    (10, "friendly"), (49, "friendly"), (50, "allied")])
+def test_disposition_band(v, band):
+    assert rules.disposition_band(v) == band
 
 
 HIDDEN = {"roll", "dc", "modifier", "bonus", "total", "margin", "needed_roll"}
