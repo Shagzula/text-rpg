@@ -27,6 +27,15 @@ DELTAS = {
     "intimidate": {True: {"narrow": -10, "clear": -10, "overwhelming": -15}, False: {"narrow": -10, "clear": -15, "overwhelming": -25}},
 }
 TRADE_DELTA = 2
+MAX_TRADE_QTY = 10  # a trade may be repeated up to this many times in one action (repeatable trades only)
+
+
+class TalkReject(Exception):
+    """Raised before any state change; actions.do_talk turns it into a validation rejection."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code, self.detail = code, detail
 RECENT_DIALOGUE = 5
 MAX_LINES, MAX_WORDS = 3, 40
 LINT_NGRAM = 6
@@ -67,6 +76,12 @@ def open_trades(conn, npc_key: str, p: Dict, band: str) -> List[str]:
     """Trades available at the band, minus completed non-repeatable ones."""
     return [k for k in personas.available_trades(p, band)
             if p["trades"][k].get("repeatable") or not db.get_flag(conn, _trade_flag(npc_key, k))]
+
+
+def done_trades(conn, npc_key: str, p: Dict, band: str) -> List[str]:
+    """One-off trades available at the band that were already completed (listed with done: true)."""
+    return [k for k in personas.available_trades(p, band)
+            if not p["trades"][k].get("repeatable") and db.get_flag(conn, _trade_flag(npc_key, k))]
 
 
 def recent_dialogue(conn, npc_id, n=RECENT_DIALOGUE) -> List[str]:
@@ -123,6 +138,9 @@ def resolve(turn, a: Dict, t) -> Dict:
     approach, skill = a["approach"], a["skill"]
     disp = npc["disposition"]
     before = rules.disposition_band(disp)
+    is_trade = approach == "trade" or bool(p and a["topic"] in (p.get("trades") or {}))
+    if is_trade:
+        _precheck_trade(turn, a, t, p, before)  # BUG-R2-02/03/04: rejections cost nothing
     check = None
     if skill:
         dc = personas.social_dc(p, skill, before) if p else turn.dc_for(a, t)
@@ -154,7 +172,7 @@ def resolve(turn, a: Dict, t) -> Dict:
         topic = a["topic"]
         known = revealed(conn, npc["id"])
         if topic and topic in (p.get("trades") or {}):
-            talk["trade"] = _trade(turn, a, t, p, topic, after, changes, consequences)
+            talk["trade"] = _trade(turn, a, t, p, topic, after, changes, consequences, a.get("quantity") or 1)
             talk["requested_topic_status"] = "none"
             if talk["trade"]["status"] == "completed":
                 set_disp(TRADE_DELTA)
@@ -184,29 +202,64 @@ def resolve(turn, a: Dict, t) -> Dict:
     return r
 
 
+def _precheck_trade(turn, a, t, p, band) -> None:
+    """Trade requests the engine can reject outright (no time, no dice): a bad quantity, a deal
+    the NPC doesn't have (never fall back to another listing), a one-off already done, more
+    than one of a one-off, or wanted items the player doesn't hold."""
+    q = a.get("quantity")
+    if q is not None and (isinstance(q, bool) or not isinstance(q, int) or not 1 <= q <= MAX_TRADE_QTY):
+        raise TalkReject("impossible_action", "bad_quantity")
+    topic = a["topic"]
+    trades = (p or {}).get("trades") or {}
+    if topic is None:
+        if a["topic_text"]:
+            raise TalkReject("impossible_action", "no_such_trade")
+        if q not in (None, 1):
+            raise TalkReject("impossible_action", "bad_quantity")
+        return  # a bare "trade": list what's on offer
+    if topic not in trades:
+        raise TalkReject("impossible_action", "no_such_trade")
+    tr = trades[topic]
+    if not tr.get("repeatable") and db.get_flag(turn.conn, _trade_flag(t.key, topic)):
+        raise TalkReject("impossible_action", "trade_done")
+    if (q or 1) > 1 and not tr.get("repeatable"):
+        raise TalkReject("impossible_action", "bad_quantity")
+    if topic not in open_trades(turn.conn, t.key, p, band):
+        return  # exists but not at this band: a resolved refusal
+    for e in tr.get("wants") or []:
+        if "item" in e and sum(i["quantity"] for i in _held_of(turn.conn, turn.cid, e["item"])) < \
+                e.get("qty", 1) * (q or 1):
+            raise TalkReject("item_not_owned", "trade_item_missing")
+
+
 def _offer(turn, a, t, p, band) -> Optional[Dict]:
+    """A bare 'trade': status offered with every open deal in `options` (no deal is picked)."""
     conn = turn.conn
     avail = open_trades(conn, t.key, p, band)
     if not avail:
-        return {"key": None, "label": None, "status": "refused", "gives": [], "wants": []}
-    used = {inv.get_item(conn, k)["template_key"] for k in a["items_used"] if inv.get_item(conn, k)}
-    pick = next((k for k in avail if any(e.get("item") in used for e in
-                                         (p["trades"][k].get("gives") or []) + (p["trades"][k].get("wants") or []))),
-                avail[0])
-    return trade_view(conn, p, pick, band, "offered")
+        return {"key": None, "label": None, "status": "refused", "gives": [], "wants": [], "options": []}
+    return {"key": None, "label": None, "status": "offered", "gives": [], "wants": [],
+            "options": [trade_context(conn, p, k, band) for k in avail]}
 
 
 def _held_of(conn, cid, template_key) -> List[Dict]:
     return [i for i in inv.list_inventory(conn, cid) if i["template_key"] == template_key]
 
 
-def _trade(turn, a, t, p, key, band, changes, consequences) -> Dict:
+def _trade(turn, a, t, p, key, band, changes, consequences, qty: int = 1) -> Dict:
     conn, cid = turn.conn, turn.cid
     if key not in open_trades(conn, t.key, p, band):
         if _label_visible(p, key, band):
             return trade_view(conn, p, key, band, "refused")
         return {"key": key, "label": None, "status": "refused", "gives": [], "wants": []}
     view = trade_view(conn, p, key, band, "unaffordable")
+    for e in view["wants"] + view["gives"]:  # repeated deals (repeatable trades only, prechecked)
+        if "gold" in e:
+            e["gold"] *= qty
+        else:
+            e["qty"] *= qty
+    if qty > 1:
+        view["quantity"] = qty
     gold = conn.execute("SELECT gold FROM characters WHERE id = ?", (cid,)).fetchone()[0]
     pay = sum(e["gold"] for e in view["wants"] if "gold" in e)
     if pay > gold:

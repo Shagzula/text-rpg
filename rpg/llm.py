@@ -401,7 +401,10 @@ class MockLLM:
             lines += [t["text"] for t in allowed_topics]
         elif talk.get("trade"):
             tr = talk["trade"]
-            lines.append(self.TRADE_LINE[tr["status"]].format(label=tr.get("label") or "that"))
+            if tr.get("options"):
+                lines.append("I've got " + _join([o["label"] for o in tr["options"]]) + ". What'll it be?")
+            else:
+                lines.append(self.TRADE_LINE[tr["status"]].format(label=tr.get("label") or "that"))
         elif approach == "farewell":
             lines.append("Off with you, then.")
         elif approach == "small_talk":
@@ -500,6 +503,10 @@ class MockLLM:
         "no_target": "There's no one here to talk to.",
         "needs_target": "Use it on what? On its own, it does nothing.",
         "no_effect": "Nothing happens.",
+        "no_such_trade": "There's no such deal on offer here.",
+        "trade_done": "That deal is already done; they won't make it again.",
+        "trade_item_missing": "You don't have what that deal needs.",
+        "bad_quantity": "That isn't a number of things anyone can trade.",
         "light_not_held": "You'd need to be holding it.",
     }
     DEGREE_WORD = {"narrow": "Just barely, ", "clear": "", "overwhelming": "Easily, ", None: ""}
@@ -582,7 +589,8 @@ class MockLLM:
             if not t["allowed_topics"] and t["refused_topics"]:
                 out.append(f"{(the + tname)[0].upper()}{(the + tname)[1:]} won't be drawn on that.")
             if t.get("trade") and not t["allowed_topics"]:
-                out.append({"offered": "They name their terms.", "completed": "The deal is struck.",
+                out.append({"offered": "They tell you what they have on offer." if t["trade"].get("options") is not None
+                            else "They name their terms.", "completed": "The deal is struck.",
                             "refused": "They shake their head.", "unaffordable": "You can't cover their price."}
                            [t["trade"]["status"]])
         if t.get("insight_read"):
@@ -662,7 +670,8 @@ def _norm_phrase(text: str) -> str:
     while words and words[0] in DETERMINERS:
         words = words[1:]
     if words and len(words[-1]) > 3 and words[-1].endswith("s") and not words[-1].endswith("ss"):
-        words[-1] = words[-1][:-1]  # plural -> singular, both sides
+        w = words[-1]  # plural -> singular, both sides
+        words[-1] = w[:-2] if w.endswith(("ches", "shes", "xes", "sses")) else w[:-1]
     return " ".join(words)
 
 

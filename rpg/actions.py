@@ -142,6 +142,11 @@ def validate_proposal(proposal) -> Tuple[Optional[Dict], List[Dict]]:
                 if a.get(f) is not None and not isinstance(a.get(f), str):
                     err(f"{p}.{f}", "string or null")
             norm.update({"approach": approach, "topic": a.get("topic"), "topic_text": a.get("topic_text")})
+            q = a.get("quantity")
+            if q is not None and (isinstance(q, bool) or not isinstance(q, int)):
+                err(f"{p}.quantity", "integer or null (the engine rejects values outside 1-10)")
+            if q is not None:
+                norm["quantity"] = q
         norm_actions.append(norm)
     if errors:
         return None, errors
@@ -452,7 +457,10 @@ class Turn:
             raise Reject("impossible_action", "not_a_creature")
         if not t.row["alive"]:
             raise Reject("impossible_action", "target_defeated")
-        return talk.resolve(self, a, t)
+        try:
+            return talk.resolve(self, a, t)
+        except talk.TalkReject as e:
+            raise Reject(e.code, e.detail)
 
     def do_skill_check(self, a, t):
         for k in a["items_used"]:

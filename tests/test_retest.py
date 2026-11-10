@@ -265,3 +265,74 @@ def test_r2_06_secret_aliases_hidden_below_band(demo):
     ctx = build_context(*demo)
     mara = next(n for n in ctx["npcs_present"] if n["key"] == "npc_mara")
     assert "the hidden lever" not in str(mara)  # cellar_lever (allied) and its aliases stay out of context
+
+
+# R2-02 / R2-03 / R2-04: trades -------------------------------------------------------------------
+
+def gold(demo):
+    return demo[0].execute("SELECT gold FROM characters").fetchone()[0]
+
+
+@pytest.mark.parametrize("text,detail", [("sell shortsword to mara", "no_such_trade"),
+                                         ("buy a dragon from mara", "no_such_trade"),
+                                         ("sell rope to mara", "trade_item_missing")])
+def test_r2_02_unmatched_buy_or_sell_is_rejected_never_offers_rations(demo, text, detail):
+    r, narration = say(demo, text)
+    res = r["results"][0]
+    assert res["status"] == "rejected" and res["detail"] == detail and r["time_passed"] is False
+    assert "rations" not in narration and "can't cover" not in narration
+    assert gold(demo) == 60
+
+
+def test_r2_02_one_off_trade_done_is_named(demo):
+    conn, cid = demo
+    db.add_item(conn, "item_rope", character_id=cid)
+    r, _ = say(demo, "sell rope to mara")
+    assert r["results"][0]["talk"]["trade"]["status"] == "completed" and gold(demo) == 68
+    db.add_item(conn, "item_rope", character_id=cid)
+    r, narration = say(demo, "sell rope to mara")
+    assert r["results"][0]["detail"] == "trade_done" and "already done" in narration and gold(demo) == 68
+
+
+def test_r2_03_missing_item_line_is_not_about_coins(demo):
+    _, narration = say(demo, "sell rope to mara")
+    assert "You don't have what that deal needs." in narration and "cover" not in narration
+
+
+@pytest.mark.parametrize("text", ["buy -1 torch from mara", "buy 0 torches from mara",
+                                  "buy 999 torches from mara", "buy 11 torches from mara"])
+def test_r2_04_bad_quantities_are_rejected(demo, text):
+    conn, cid = demo
+    torches = len([1 for i in build_context(conn, cid)["player_inventory"] if i["name"] == "Torch"])
+    r, narration = say(demo, text)
+    res = r["results"][0]
+    assert (res["status"], res["detail"]) == ("rejected", "bad_quantity") and r["time_passed"] is False
+    assert gold(demo) == 60
+    assert len([1 for i in build_context(conn, cid)["player_inventory"] if i["name"] == "Torch"]) == torches
+
+
+def test_r2_04_valid_quantity_repeats_a_repeatable_trade(demo):
+    r, _ = say(demo, "buy two torches from mara")
+    t = r["results"][0]["talk"]["trade"]
+    assert t["status"] == "completed" and t["quantity"] == 2 and t["wants"] == [{"gold": 10}]
+    assert gold(demo) == 50
+
+
+def test_r2_04_quantity_on_a_one_off_is_rejected(demo):
+    conn, cid = demo
+    db.add_item(conn, "item_rope", character_id=cid, quantity=3)
+    r, _ = say(demo, "sell three ropes to mara")
+    assert r["results"][0]["detail"] == "bad_quantity"
+
+
+def test_r2_04_validator_rejects_non_integer_quantity():
+    a = {"action_type": "talk", "target": "npc_mara", "intent_summary": "Buy.", "approach": "trade",
+         "topic": "trade_buy_torch", "quantity": "lots"}
+    _, errors = actions.validate_proposal({"actions": [a], "ooc": None, "unresolved_references": []})
+    assert errors and errors[0]["path"] == "actions[0].quantity"
+
+
+def test_r2_02_bare_trade_lists_options(demo):
+    r, narration = say(demo, "trade with mara")
+    t = r["results"][0]["talk"]["trade"]
+    assert t["key"] is None and len(t["options"]) == 4 and gold(demo) == 60

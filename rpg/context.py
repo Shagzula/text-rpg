@@ -79,7 +79,8 @@ def npc_talk_context(conn, n) -> Dict:
         return {"topics": [], "trades": [], "recent_dialogue": talk.recent_dialogue(conn, n["id"])}
     band = rules.disposition_band(n["disposition"])
     return {"topics": personas.visible_topics(p, band),
-            "trades": [talk.trade_context(conn, p, k, band) for k in talk.open_trades(conn, n["key"], p, band)],
+            "trades": [talk.trade_context(conn, p, k, band) for k in talk.open_trades(conn, n["key"], p, band)]
+            + [{**talk.trade_context(conn, p, k, band), "done": True} for k in talk.done_trades(conn, n["key"], p, band)],
             "recent_dialogue": talk.recent_dialogue(conn, n["id"])}
 
 

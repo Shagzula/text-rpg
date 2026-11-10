@@ -167,7 +167,9 @@ def test_context_drops_completed_one_off_trade(g):
     db.add_item(g["conn"], "item_rope", character_id=g["cid"])
     run(g, say("trade", "trade_sell_rope"))
     mara = next(n for n in build_context(g["conn"], g["cid"])["npcs_present"] if n["key"] == "npc_mara")
-    assert "trade_sell_rope" not in {t["key"] for t in mara["trades"]}
+    rope = next(t for t in mara["trades"] if t["key"] == "trade_sell_rope")
+    assert rope["done"] is True  # still listed so a repeat ask is named "already done" (BUG-R2-02)
+    assert all(not t.get("done") for t in mara["trades"] if t["key"] != "trade_sell_rope")
 
 
 # --- secrets never leak ---------------------------------------------------------------------------

@@ -170,11 +170,14 @@ def test_rejected_talk_has_no_talk_block(g):
 
 # --- trades and gold -----------------------------------------------------------------------------
 
-def test_trade_offer_lists_band_priced_first_trade(g):
+def test_bare_trade_lists_every_open_deal_band_priced(g):
     t = run(g, say("trade"))["results"][0]["talk"]["trade"]
-    assert t["status"] == "offered" and t["key"] == "trade_buy_rations"
-    assert t["wants"] == [{"gold": 5}]  # friendly: 5 * 0.9 rounded up
-    assert t["gives"] == [{"item": "item_rations", "name": "Travel Rations", "qty": 1}]
+    assert t["status"] == "offered" and t["key"] is None  # never picks a listing (BUG-R2-02)
+    keys = [o["key"] for o in t["options"]]
+    assert keys == ["trade_buy_rations", "trade_buy_torch", "trade_sell_rope", "trade_buy_tonic"]
+    rations = t["options"][0]
+    assert rations["wants"] == [{"gold": 5}]  # friendly: 5 * 0.9 rounded up
+    assert rations["gives"] == [{"item": "item_rations", "name": "Travel Rations", "qty": 1}]
 
 
 def test_buy_completes_moves_gold_and_items(g):
@@ -193,14 +196,16 @@ def test_sell_rope_pays_band_price_and_is_once(g):
     assert r["talk"]["trade"]["status"] == "completed" and gold(g) == 60 + 8  # 8 * 1.1 rounded down
     assert not inv.has_item(conn, g["cid"], "item_rope_mine")
     db.add_item(conn, "item_rope", character_id=g["cid"])
-    assert run(g, say("trade", "trade_sell_rope"))["results"][0]["talk"]["trade"]["status"] == "refused"
+    r = run(g, say("trade", "trade_sell_rope"))["results"][0]
+    assert (r["status"], r["detail"]) == ("rejected", "trade_done")
 
 
 def test_unaffordable_when_short_of_gold_or_items(g):
     conn = g["conn"]
     assert run(g, say("trade", "trade_buy_tonic"))["results"][0]["talk"]["trade"]["status"] == "unaffordable"
     assert gold(g) == 60
-    assert run(g, say("trade", "trade_sell_rope"))["results"][0]["talk"]["trade"]["status"] == "unaffordable"
+    r = run(g, say("trade", "trade_sell_rope"))["results"][0]  # no rope: a rejection, not "can't pay"
+    assert (r["status"], r["reason"], r["detail"]) == ("rejected", "item_not_owned", "trade_item_missing")
 
 
 def test_trade_above_band_is_refused_without_label(g):
