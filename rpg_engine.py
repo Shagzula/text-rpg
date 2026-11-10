@@ -59,106 +59,101 @@ def resolve_skill_check(
     return result.to_dict()
 
 # ---------------------------------------------------------------------------
-# Example action processing
+# Action processing (contracts.md v0.3) lives in rpg/actions.py
 # ---------------------------------------------------------------------------
 
-def process_action_proposal(character_id: int, proposal: Dict[str, Any], *, db_path=None,
-                            roller: Optional[Callable[[], int]] = None) -> Dict[str, Any]:
-    """
-    Take an LLM action proposal and return an engine result
-    suitable for feeding back into the narration prompt.
-    """
-    action_type = proposal.get("action_type")
-
-    if action_type == "skill_check":
-        result = resolve_skill_check(
-            character_id=character_id,
-            skill=proposal.get("skill", "athletics"),
-            ability=proposal.get("ability"),
-            proposed_dc=proposal.get("proposed_dc", 12),
-            is_last_ditch=proposal.get("is_last_ditch", False),
-            db_path=db_path,
-            roller=roller,
-        )
-        outcome_text = proposal.get("success_outcome") if result["success"] else proposal.get("failure_outcome")
-        must_mention = [t for t in [outcome_text] if t]
-        # Narration hints must match engine state: mention an injury only if one was applied.
-        if result["injury_applied"]:
-            must_mention.append(result["injury_applied"]["description"])
-        result["narrative_constraints"] = {
-            "must_mention": must_mention,
-            "must_not_mention": ["dice", "roll", "modifier", "DC", "skill check"]
-        }
-        return result
-
-    # Placeholder for other action types
-    return {
-        "success": False,
-        "reason": f"Action type '{action_type}' not yet implemented",
-        "narrative_constraints": {"must_mention": [], "must_not_mention": []}
-    }
+from rpg.actions import process_action_proposal  # noqa: E402  (conn, character_id, proposal, rng=None)
+from rpg.context import build_context  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Demo / quick test
 # ---------------------------------------------------------------------------
 
+DEMO_TEMPLATES = [
+    {"id": "item_short_blade", "name": "Short Blade", "category": "weapon", "slot": "main_hand",
+     "stats": {"subcategory": "simple_melee", "damage": "1d6", "damage_type": "piercing",
+               "proficiency": "simple", "properties": ["finesse", "light"]}},
+    {"id": "item_hanging_lamp", "name": "Hanging lamp", "category": "utility", "tags": ["fixture"]},
+]
+
+
+def _seed_demo(conn) -> int:
+    """Create the demo scene once (looked up by key) and return the rogue's id."""
+    cid = db.character_id_by_key(conn, "pc_test_rogue")
+    if cid is not None:
+        return cid
+    for t in DEMO_TEMPLATES:
+        if not conn.execute("SELECT 1 FROM item_templates WHERE key = ?", (t["id"],)).fetchone():
+            db.add_item_template(conn, t)
+    store = conn.execute("INSERT INTO locations (key, name, description) VALUES "
+                         "('loc_demo_storeroom', 'Storeroom', 'A cramped room of shelves and crates.')").lastrowid
+    yard = conn.execute("INSERT INTO locations (key, name, description) VALUES "
+                        "('loc_demo_yard', 'Yard', 'A muddy yard.')").lastrowid
+    cellar = conn.execute("INSERT INTO locations (key, name, description) VALUES "
+                          "('loc_demo_cellar', 'Cellar', 'Damp and dark.')").lastrowid
+    ex = ("INSERT INTO location_exits (from_location_id, to_location_id, direction, description, locked, unlock_dc)"
+          " VALUES (?, ?, ?, ?, ?, ?)")
+    conn.execute(ex, (store, yard, "north", "low wall", 0, None))
+    conn.execute(ex, (yard, store, "south", "low wall", 0, None))
+    conn.execute(ex, (store, cellar, "down", "iron-banded door", 1, 21))
+    conn.execute("INSERT INTO npcs (key, name, location_id, traits, defense_dc, max_hp) VALUES "
+                 "('npc_demo_guard', 'Dozing Guard', ?, '[\"drowsy\"]', 8, 4)", (store,))
+    # Rogue: STR 10, DEX 16, level 3 (PB +2)
+    cid = db.create_character(conn, "Test Rogue", key="pc_test_rogue", level=3, scores={"str": 10, "dex": 16},
+                              max_hp=24, location_id=store,
+                              skills={"acrobatics": "proficient", "athletics": "proficient"})
+    db.add_item(conn, "item_short_blade", character_id=cid, equipped=True, key="item_rusty_shortsword",
+                display_name="Rusty Shortsword")
+    db.add_item(conn, "item_hanging_lamp", location_id=store, key="item_demo_lamp")
+    return cid
+
+
+def _action(action_type, intent, **kw):
+    a = {"action_type": action_type, "skill": None, "target": None, "items_used": [], "last_ditch": False,
+         "est_difficulty": "medium", "intent_summary": intent, "clarification_needed": False,
+         "clarification_question": None}
+    a.update(kw)
+    return {"actions": [a], "ooc": None, "unresolved_references": []}
+
+
 def demo(db_path=None, seed: Optional[int] = None):
-    """Create a sample character and run a couple of checks."""
-    path = init_db(db_path if db_path is not None else DB_PATH)
+    """Seed a tiny scene (once per save file) and run a few v0.3 proposals.
+    With no db_path the demo uses a throwaway temp file, so the real save is untouched."""
+    import tempfile
+    tmp = None
+    if db_path is None:
+        tmp = tempfile.TemporaryDirectory()
+        db_path = Path(tmp.name) / "demo.db"
+    path = init_db(db_path)
     rng = random.Random(seed)
-    roller = lambda: rng.randint(1, 20)
     with connect(path) as conn:
-        # Create a sample rogue (STR 10, DEX 16, level 3: PB +2)
-        # Reuse the demo rogue across runs (looked up by key).
-        char_id = db.character_id_by_key(conn, "pc_test_rogue") or db.create_character(
-            conn, "Test Rogue", key="pc_test_rogue", level=3, scores={"str": 10, "dex": 16},
-            max_hp=24, skills={"acrobatics": "proficient", "athletics": "proficient"},
-        )
+        char_id = _seed_demo(conn)
+    print(f"Save file: {path}{' (throwaway)' if tmp else ''}")
+    print(f"Character id={char_id} (pc_test_rogue)")
 
-    print(f"Save file: {path}")
-    print(f"Created character id={char_id}")
-
-    # Easy climb (should auto-succeed)
-    proposal_easy = {
-        "action_type": "skill_check",
-        "skill": "athletics",
-        "ability": "str",
-        "proposed_dc": 10,
-        "is_last_ditch": False,
-        "success_outcome": "You climb the short wall easily",
-        "failure_outcome": "You slip"
-    }
-    print("\n--- Easy climb ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_easy, db_path=path, roller=roller), indent=2))
-
-    # Hard door kick by low-STR character (should be impossible)
-    proposal_impossible = {
-        "action_type": "skill_check",
-        "skill": "athletics",
-        "ability": "str",
-        "proposed_dc": 21,  # +2 athletics would need a 19+: filtered as impossible
-        "is_last_ditch": False,
-        "success_outcome": "You smash the door",
-        "failure_outcome": "The door does not budge"
-    }
-    print("\n--- Impossible door ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_impossible, db_path=path, roller=roller), indent=2))
-
-    # Last-ditch version
-    proposal_lastditch = {
-        "action_type": "skill_check",
-        "skill": "athletics",
-        "ability": "str",
-        "proposed_dc": 18,
-        "is_last_ditch": True,
-        "success_outcome": "You force the door open",
-        "failure_outcome": "You hurt yourself and fail"
-    }
-    print("\n--- Last-ditch door ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_lastditch, db_path=path, roller=roller), indent=2))
+    turns = [
+        ("Easy climb (auto-success)", _action("move", "Climb over the low wall into the yard.",
+                                              skill="athletics", est_difficulty="easy", target="loc_demo_yard")),
+        ("Back again", _action("move", "Climb back over the wall.", target="loc_demo_storeroom")),
+        ("Impossible door", _action("skill_check", "Kick the iron-banded door open.", skill="athletics",
+                                    target="loc_demo_cellar", est_difficulty="hard")),
+        ("Last-ditch door", _action("skill_check", "Throw everything at the door, whatever it costs.",
+                                    skill="athletics", target="loc_demo_cellar", last_ditch=True)),
+        ("Claimed item", _action("attack", "Cleave the guard with a greatsword.", skill="str",
+                                 target="npc_demo_guard", items_used=["item_greatsword"])),
+    ]
+    for title, proposal in turns:
+        with connect(path) as conn:
+            print(f"\n--- {title} ---")
+            print(json.dumps(process_action_proposal(conn, char_id, proposal, rng=rng), indent=2))
+    with connect(path) as conn:
+        print("\n--- Context block ---")
+        print(json.dumps(build_context(conn, char_id), indent=2))
+    if tmp:
+        tmp.cleanup()
 
 
 if __name__ == "__main__":
-    # Usage: python rpg_engine.py [db_path] [seed]   (or set RPG_DB_PATH)
+    # Usage: python rpg_engine.py [db_path] [seed]   (no db_path = throwaway demo DB)
     demo(sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None,
          int(sys.argv[2]) if len(sys.argv) > 2 else None)
