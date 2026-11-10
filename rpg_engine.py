@@ -155,5 +155,9 @@ def demo(db_path=None, seed: Optional[int] = None):
 
 if __name__ == "__main__":
     # Usage: python rpg_engine.py [db_path] [seed]   (no db_path = throwaway demo DB)
+    #        python rpg_engine.py play [--new] [--db PATH] [--seed N] ...   (same as python -m rpg)
+    if len(sys.argv) > 1 and sys.argv[1] == "play":
+        from rpg.cli import main as play
+        raise SystemExit(play(sys.argv[2:]))
     demo(sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None,
          int(sys.argv[2]) if len(sys.argv) > 2 else None)

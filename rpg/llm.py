@@ -101,6 +101,13 @@ def _slug(text: str) -> str:
     return "_".join(words) or "thing"
 
 
+def _strip_articles(text: str) -> str:
+    words = text.split()
+    while words and words[0] in ("to", "at", "the", "a", "an", "my", "up", "through", "into", "over"):
+        words = words[1:]
+    return " ".join(words)
+
+
 def _words(text: str) -> set:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS}
 
@@ -118,13 +125,15 @@ class MockLLM:
             if p in text:
                 last_ditch = True
                 text = " ".join(text.replace(p, " ").split())
+        while text.split(" ", 1)[0] in ("to", "and", "i", "then") and " " in text:
+            text = text.split(" ", 1)[1]
         if text in OOC_WORDS:
             return {"actions": [], "ooc": {"command": OOC_WORDS[text], "text": player_text}, "unresolved_references": []}
         verb, rest = self._split_verb(text)
         if verb is None and text in DIRECTIONS:
             verb, rest = "move", text
         action = {"action_type": "other", "skill": None, "target": None, "items_used": [], "last_ditch": last_ditch,
-                  "est_difficulty": "medium", "intent_summary": f"Try to {player_text.strip().rstrip('.')}.",
+                  "est_difficulty": "medium", "intent_summary": f"Try to {text.rstrip('.')}.",
                   "clarification_needed": False, "clarification_question": None}
         refs: List[str] = []
         if verb in ("inventory", "rest", "wait"):
@@ -143,7 +152,8 @@ class MockLLM:
         elif verb == "move":
             key, amb = self._match(rest, context, ("exit",), "loc")
             self._apply_target(action, key, amb, rest, refs)
-            action.update(action_type="move", est_difficulty="trivial", intent_summary=f"Go {rest}.")
+            action.update(action_type="move", est_difficulty="trivial",
+                          intent_summary=f"Go {rest}." if rest in DIRECTIONS else f"Go to the {rest}.")
             if text.startswith("climb"):
                 action.update(skill="athletics", est_difficulty="easy")
         elif verb in ("take", "drop", "equip", "unequip"):
@@ -185,8 +195,14 @@ class MockLLM:
         elif verb in ("pick", "force"):
             for junk in ("the lock on ", "lock on ", "the lock of ", "lock of ", "open "):
                 if rest.startswith(junk):
-                    rest = rest[len(junk):]
+                    rest = _strip_articles(rest[len(junk):])
             key, amb = self._match(rest or "door", context, ("exit", "item"), "loc")
+            locked = {e["to"] for e in (context.get("location") or {}).get("exits", []) if e["state"] == "locked"}
+            if amb and len(set(amb) & locked) == 1:  # "the door" = the locked one
+                key, amb = (set(amb) & locked).pop(), []
+            known = {k for k, _ in self._candidates(context, ("exit", "item"))}
+            if not amb and key not in known and len(locked) == 1:  # "pick the lock"
+                key = next(iter(locked))
             self._apply_target(action, key, amb, rest or "door", refs)
             skill = "sleight_of_hand" if verb == "pick" else "athletics"
             action.update(action_type="skill_check", skill=skill,
@@ -205,10 +221,7 @@ class MockLLM:
             for w in sorted(words, key=len, reverse=True):
                 if text == w or text.startswith(w + " "):
                     rest = text[len(w):].strip()
-                    for prefix in ("to ", "at ", "the ", "up ", "through "):
-                        if rest.startswith(prefix):
-                            rest = rest[len(prefix):]
-                    return verb, rest
+                    return verb, _strip_articles(rest)
         return None, text
 
     @staticmethod

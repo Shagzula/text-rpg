@@ -213,7 +213,10 @@ class CheckResult:
         }
 
     def log_debug(self, **context) -> None:
-        debug_log.debug("check %s", {**self.to_dict(), **context})
+        keys = ("skill", "ability", "dc", "roll", "modifier", "bonus", "total", "margin", "needed_roll", "reason")
+        info = {k: getattr(self, k) for k in keys}
+        info["costs"] = [c.get("name") for c in self.consequences]
+        debug_log.debug("check %s", {**info, **context})
 
     def to_dict(self) -> Dict:
         d = asdict(self)
