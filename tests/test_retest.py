@@ -95,11 +95,11 @@ def test_r03_lever_by_touch_in_the_dark(demo, text):
     assert "clunks" in narration
 
 
-def test_r03_examine_lever_in_dark_is_too_dark_not_the_sword(demo):
+def test_r03_examine_lever_in_dark_is_by_touch_not_the_sword(demo):
     go(demo, "loc_cellar")
-    r, text = say(demo, "examine rusty lever")
-    assert r["results"][0]["target"] is None or r["results"][0]["target"]["key"] != "item_rusty_shortsword"
-    assert r["results"][0]["detail"] == "too_dark" and "Shortsword" not in text
+    r, text = say(demo, "examine rusty lever")  # v0.6: a felt fixture is known by touch (R2-05)
+    assert r["results"][0]["target"]["key"] == "item_rusty_lever"
+    assert "by touch" in text and "Shortsword" not in text
 
 
 def test_r03_felt_items_only_fixtures_and_only_in_the_dark(demo):
@@ -198,7 +198,7 @@ def test_r07_continuing_a_dead_save_has_no_greeting(tmp_path):
 
 # R08 (low) ---------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("text", ["search", "search the room", "feel around"])
+@pytest.mark.parametrize("text", ["search", "search the room", "rummage around"])
 def test_r08_search_in_the_dark_is_a_check_at_disadvantage(demo, text, caplog):
     go(demo, "loc_cellar")
     with caplog.at_level("DEBUG", logger="rpg.debug"):
@@ -336,3 +336,53 @@ def test_r2_02_bare_trade_lists_options(demo):
     r, narration = say(demo, "trade with mara")
     t = r["results"][0]["talk"]["trade"]
     assert t["key"] is None and len(t["options"]) == 4 and gold(demo) == 60
+
+
+# R2-05: searching and feeling in the dark ----------------------------------------------------------
+
+def test_r2_05_successful_dark_search_finds_fixtures_and_items(demo):
+    conn, cid = demo
+    go(demo, "loc_cellar")
+    r, text = say(demo, "search", 20, 18)  # disadvantage keeps 18: 18 + 3 >= 15
+    res = r["results"][0]
+    assert res["outcome"] == "success"
+    assert {f["key"] for f in res["felt"]} == {"item_rusty_lever", "item_rope"}
+    assert "By touch you find" in text and "Rusty lever" in text and "Hempen Rope" in text
+    felt = {i["key"] for i in build_context(conn, cid)["felt_items"]}
+    assert felt == {"item_rusty_lever", "item_rope"}  # remembered
+
+
+def test_r2_05_failed_dark_search_finds_nothing_new(demo):
+    conn, cid = demo
+    go(demo, "loc_cellar")
+    r, text = say(demo, "search", 2, 2)
+    assert r["results"][0]["outcome"] == "failure" and "felt" not in r["results"][0]
+    assert {i["key"] for i in build_context(conn, cid)["felt_items"]} == {"item_rusty_lever"}
+
+
+def test_r2_05_feel_around_is_the_touch_path(demo):
+    go(demo, "loc_cellar")
+    r, text = say(demo, "feel around")  # no dice scripted: no roll
+    res = r["results"][0]
+    assert res["status"] == "resolved" and res["skill"] is None
+    assert [f["key"] for f in res["felt"]] == ["item_rusty_lever"] and "By touch you find the Rusty lever" in text
+
+
+@pytest.mark.parametrize("text", ["feel for the lever", "feel lever", "feel the rusty lever"])
+def test_r2_05_feel_for_the_lever_by_touch(demo, text):
+    go(demo, "loc_cellar")
+    p = llm_mod.MockLLM().interpret(text, build_context(*demo))
+    assert p["actions"][0]["intent_summary"] in ("Feel for the lever.", "Feel for the rusty lever.")
+    r, narration = say(demo, text)
+    res = r["results"][0]
+    assert res["status"] == "resolved" and res["target"]["key"] == "item_rusty_lever" and res["skill"] is None
+    assert "the for" not in narration and "by touch" in narration
+
+
+def test_r2_05_rope_only_by_touch_after_a_search(demo):
+    go(demo, "loc_cellar")
+    r, _ = say(demo, "examine rope")
+    assert r["results"][0]["status"] == "rejected"
+    say(demo, "search", 20, 18)
+    r, _ = say(demo, "examine rope")
+    assert r["results"][0]["status"] == "resolved"

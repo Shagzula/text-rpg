@@ -84,6 +84,19 @@ def npc_talk_context(conn, n) -> Dict:
             "recent_dialogue": talk.recent_dialogue(conn, n["id"])}
 
 
+SEARCHED_DARK_FLAG = "searched_dark:"
+
+
+def felt_items(conn, location_id, character_id=None) -> List[Dict]:
+    """What you can find by touch in the dark here: fixtures (BUG-R03), plus the loose items once
+    a search of this place has succeeded (BUG-R2-05). Never out-of-reach things."""
+    loc_key = conn.execute("SELECT key FROM locations WHERE id = ?", (location_id,)).fetchone()[0]
+    searched = bool(db.get_flag(conn, SEARCHED_DARK_FLAG + loc_key))
+    return [{"key": i["key"], "name": i["name"], "fixture": i["fixture"]}
+            for i in list_location_items(conn, location_id)
+            if not i["out_of_reach"] and (i["fixture"] or searched)]
+
+
 def build_context(conn, character_id: int) -> Dict:
     ch = conn.execute("SELECT * FROM characters WHERE id = ?", (character_id,)).fetchone()
     if ch is None:
@@ -106,9 +119,7 @@ def build_context(conn, character_id: int) -> Dict:
                          "out_of_reach": bool(n["out_of_reach"]),
                          "conditions": effects.npc_conditions(conn, n["id"]),
                          "visible": lit, **npc_talk_context(conn, n)})
-        # BUG-R03: in the dark you can still feel for fixed scenery (a lever) by name
-        felt = [] if lit else [{"key": i["key"], "name": i["name"], "fixture": True}
-                               for i in list_location_items(conn, loc["id"]) if i["fixture"] and not i["out_of_reach"]]
+        felt = [] if lit else felt_items(conn, loc["id"], character_id)
         items = [] if not lit else [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
                   "state": i["state"], "out_of_reach": i["out_of_reach"]}
                  for i in list_location_items(conn, loc["id"])]

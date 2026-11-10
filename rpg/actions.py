@@ -45,6 +45,7 @@ TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_ope
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
 TALK_APPROACHES = ("ask", "persuade", "deceive", "intimidate", "insight", "small_talk", "trade", "farewell")
 APPROACH_SKILL, SKILL_APPROACH = talk.APPROACH_SKILL, talk.SKILL_APPROACH
+TOUCH_DESCRIPTION = "You find it by touch in the dark: the {name}."
 DEATH_DESCRIPTION = "Your wounds overcome you, and you fall."
 
 
@@ -390,16 +391,26 @@ class Turn:
         held = t is not None and (t.kind == "self" or (t.kind == "item" and t.row["character_id"] == self.cid))
         here = t is None or (t.kind == "location" and t.row["id"] == self.loc_id)
         lit = self.lit
-        if not a["skill"] and not held and not here and not lit:
+        felt = {i["key"] for i in context.felt_items(self.conn, self.loc_id, self.cid)} if not lit else set()
+        by_touch = not lit and t is not None and t.kind == "item" and t.key in felt and not held
+        if not a["skill"] and not held and not here and not by_touch and not lit:
             raise Reject("impossible_action", "too_dark")  # searching (a skill) is allowed, at disadvantage
         target = t.ref() if t else None
         if t is not None:
             target["description"] = self._describe(t)
             if here and not lit:  # BUG-R02: looking around in the dark shows the darkness
                 target["description"] = context.DARK_DESCRIPTION
-        if a["skill"]:
-            return self.result(a, target=target, check=self.check(a, a["skill"], self.dc_for(a, t)))
-        return self.result(a, target=target)
+            if by_touch:  # BUG-R2-05: a felt thing is known by touch, not by sight
+                target["description"] = TOUCH_DESCRIPTION.format(name=t.name)
+        check = self.check(a, a["skill"], self.dc_for(a, t)) if a["skill"] else None
+        r = self.result(a, target=target, check=check)
+        if here and not lit and (check is None or check.success):
+            if check is not None:  # a successful search finds the loose things too, and remembers them
+                loc_key = self.conn.execute("SELECT key FROM locations WHERE id = ?", (self.loc_id,)).fetchone()[0]
+                db.set_flag(self.conn, f"{context.SEARCHED_DARK_FLAG}{loc_key}", True)
+            r["felt"] = [{"key": i["key"], "name": i["name"]}
+                         for i in context.felt_items(self.conn, self.loc_id, self.cid)]
+        return r
 
     def _describe(self, t: Target) -> Optional[str]:
         if t.kind == "item":

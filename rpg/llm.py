@@ -127,8 +127,10 @@ TALK_SUMMARY = {"ask": "Ask the {npc}{about}.", "persuade": "Try to persuade the
                 "insight": "Study the {npc} for what they are hiding{about}.", "small_talk": "Chat with the {npc}.",
                 "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}."}
 SUBJECT_SPLITS = (" about ", " regarding ", " for ", " into ", " that ", " to tell me about ", " to tell me ")
-SEARCH_WORDS = ("search", "feel", "grope", "rummage")
-ROOM_WORDS = ("", "room", "area", "around", "here", "the room", "the area", "around the room", "place")
+SEARCH_WORDS = ("search", "rummage")  # an investigation check
+TOUCH_WORDS = ("feel", "grope")        # the touch path: no roll
+ROOM_WORDS = ("", "room", "area", "around", "here", "the room", "the area", "around the room", "around room",
+              "place", "around here", "in the dark", "the dark", "dark")
 KEY_PREFIXES = {"item", "npc", "loc", "pc"}  # slug prefixes are not words to match on (BUG-14)
 OOC_WORDS = {"quit": "quit", "exit": "quit", "save": "save", "load": "load", "help": "help",
              "stats": "stats", "undo": "undo"}
@@ -189,15 +191,19 @@ class MockLLM:
             action.update(action_type="examine", est_difficulty="trivial")
             if text.split()[0] in SEARCH_WORDS:  # BUG-R08: searching is an investigation check
                 action.update(skill="investigation", est_difficulty="medium")
+            touch = text.split()[0] in TOUCH_WORDS
+            rest = re.sub(r"^(for|at|along|over)\s+", "", rest)
+            rest = _strip_articles(rest)  # 'feel for the lever' -> 'lever' (BUG-R2-05)
             if rest in ROOM_WORDS:
                 rest = ""
             if rest:
                 key, amb = self._match(rest, context, ("npc", "item", "inv", "exit", "loc"), "item")
                 self._apply_target(action, key, amb, rest, refs)
-                action["intent_summary"] = f"Examine the {rest}."
+                action["intent_summary"] = f"Feel for the {rest}." if touch else f"Examine the {rest}."
             else:
                 action["target"] = (context.get("location") or {}).get("key")
-                action["intent_summary"] = "Search the area." if action["skill"] else "Look around."
+                action["intent_summary"] = ("Search the area." if action["skill"] else
+                                            "Feel around." if touch else "Look around.")
         elif verb == "move":
             exits = (context.get("location") or {}).get("exits", [])
             if direction:
@@ -538,7 +544,10 @@ class MockLLM:
                 out.append(self._describe_scene(context).replace(f"\n\n{CLOSING_LINE}", ""))
             else:
                 desc = target.get("description")
-                out.append(f"You study the {tname}." + (f" {desc}" if desc else " Nothing about it stands out."))
+                if desc and desc.startswith("You find it by touch"):
+                    out.append(desc)
+                else:
+                    out.append(f"You study the {tname}." + (f" {desc}" if desc else " Nothing about it stands out."))
         elif at == "inventory":
             inv = [i["name"] + (" (equipped)" if i["equipped"] else "") for i in context.get("player_inventory", [])]
             out.append("You are carrying " + _join(inv) + "." if inv else "You are carrying nothing.")
@@ -557,6 +566,10 @@ class MockLLM:
             out.append(f"{self.DEGREE_WORD[r['degree']]}you manage it: {r['intent_summary'][0].lower()}{r['intent_summary'][1:]}")
         else:
             out.append(f"{self.FAIL_WORD[r['degree']]}you fail to {r['intent_summary'][0].lower()}{r['intent_summary'][1:]}")
+        if r.get("felt"):
+            out.append("By touch you find " + _join([f"the {f['name']}" for f in r["felt"]]) + ".")
+        elif "felt" in r:
+            out.append("Your hands find nothing but stone and damp.")
         out += [self._change_text(c) for c in r["state_changes"]]
         out += [self._consequence_text(c, context) for c in r["consequences"]]
         text = " ".join(x for x in out if x)
