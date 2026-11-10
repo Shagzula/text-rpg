@@ -1,0 +1,147 @@
+-- Text RPG engine schema (v1). All authoritative game state lives here.
+-- Extends the starter rpg_engine.py schema: same table/column names where they
+-- existed, plus FKs, CHECKs, JSON columns and the tables the design doc needs.
+-- JSON columns are TEXT validated with json_valid(). Foreign keys are enforced
+-- (PRAGMA foreign_keys=ON is set on every connection by rpg.db).
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS factions (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    traits      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(traits))
+);
+
+CREATE TABLE IF NOT EXISTS locations (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT,
+    area_tier   INTEGER NOT NULL DEFAULT 1 CHECK (area_tier >= 1),   -- power tier
+    parent_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL, -- e.g. room -> dungeon
+    faction_id  INTEGER REFERENCES factions(id) ON DELETE SET NULL
+);
+
+-- Directed connections between locations.
+CREATE TABLE IF NOT EXISTS location_exits (
+    from_location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    to_location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    direction        TEXT NOT NULL,      -- 'north', 'cellar door', ...
+    description      TEXT,
+    locked           INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1)),
+    unlock_dc        INTEGER,            -- DC to force/pick, if any
+    PRIMARY KEY (from_location_id, direction)
+);
+
+CREATE TABLE IF NOT EXISTS characters (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    is_player   INTEGER NOT NULL DEFAULT 1 CHECK (is_player IN (0, 1)),
+    level       INTEGER NOT NULL DEFAULT 1  CHECK (level BETWEEN 1 AND 20),
+    str_score   INTEGER NOT NULL DEFAULT 10 CHECK (str_score BETWEEN 1 AND 30),
+    dex_score   INTEGER NOT NULL DEFAULT 10 CHECK (dex_score BETWEEN 1 AND 30),
+    con_score   INTEGER NOT NULL DEFAULT 10 CHECK (con_score BETWEEN 1 AND 30),
+    int_score   INTEGER NOT NULL DEFAULT 10 CHECK (int_score BETWEEN 1 AND 30),
+    wis_score   INTEGER NOT NULL DEFAULT 10 CHECK (wis_score BETWEEN 1 AND 30),
+    cha_score   INTEGER NOT NULL DEFAULT 10 CHECK (cha_score BETWEEN 1 AND 30),
+    max_hp      INTEGER NOT NULL CHECK (max_hp > 0),
+    current_hp  INTEGER NOT NULL,
+    location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS character_skills (
+    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    skill        TEXT NOT NULL,
+    proficient   INTEGER NOT NULL DEFAULT 0 CHECK (proficient IN (0, 1)),
+    expertise    INTEGER NOT NULL DEFAULT 0 CHECK (expertise IN (0, 1)),
+    PRIMARY KEY (character_id, skill)
+);
+
+-- Conditions on a character. effect JSON, e.g.
+--   {"all_checks": -1, "abilities": {"str": -2}, "skills": {"athletics": -1}}
+-- lasting=1: persists until explicitly removed (rest/healing/quest).
+-- lasting=0: duration_turns counts down (NULL = until removed by the engine).
+CREATE TABLE IF NOT EXISTS character_conditions (
+    id             INTEGER PRIMARY KEY,
+    character_id   INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL,
+    description    TEXT,
+    severity       INTEGER NOT NULL DEFAULT 1,
+    effect         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(effect)),
+    lasting        INTEGER NOT NULL DEFAULT 0 CHECK (lasting IN (0, 1)),
+    duration_turns INTEGER,
+    source         TEXT,
+    expires_on     TEXT,
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Engine-owned item templates. id is a stable slug the LLM must map onto.
+CREATE TABLE IF NOT EXISTS item_templates (
+    id          TEXT PRIMARY KEY,               -- 'shortsword', 'torch'
+    name        TEXT NOT NULL,
+    category    TEXT NOT NULL,                  -- weapon, armor, tool, consumable, misc
+    power_tier  INTEGER NOT NULL DEFAULT 1 CHECK (power_tier >= 1),
+    stats       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats)),
+    tags        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags)),
+    description TEXT
+);
+
+-- Item instances owned by a character.
+CREATE TABLE IF NOT EXISTS inventory (
+    id           INTEGER PRIMARY KEY,
+    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    template_id  TEXT NOT NULL REFERENCES item_templates(id),
+    display_name TEXT,                          -- custom name, e.g. "Grandpa's rusty shovel"
+    quantity     INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    equipped     INTEGER NOT NULL DEFAULT 0 CHECK (equipped IN (0, 1)),
+    notes        TEXT,
+    acquired_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS npcs (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT,
+    location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    faction_id  INTEGER REFERENCES factions(id) ON DELETE SET NULL,
+    traits      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(traits)),
+    disposition INTEGER NOT NULL DEFAULT 0 CHECK (disposition BETWEEN -100 AND 100),
+    is_major    INTEGER NOT NULL DEFAULT 0 CHECK (is_major IN (0, 1)),
+    alive       INTEGER NOT NULL DEFAULT 1 CHECK (alive IN (0, 1)),
+    notes       TEXT
+);
+
+-- Player <-> NPC/faction standing (kept from starter).
+CREATE TABLE IF NOT EXISTS relationships (
+    id           INTEGER PRIMARY KEY,
+    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    target_type  TEXT NOT NULL CHECK (target_type IN ('npc', 'faction')),
+    target_id    INTEGER NOT NULL,
+    value        INTEGER NOT NULL DEFAULT 0,
+    notes        TEXT
+);
+
+-- Key/value world flags (quest state, events). value is JSON.
+CREATE TABLE IF NOT EXISTS world_flags (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL CHECK (json_valid(value)),
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Save metadata. One SQLite file = one campaign; this row describes it.
+CREATE TABLE IF NOT EXISTS save_games (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    character_id INTEGER REFERENCES characters(id) ON DELETE SET NULL,
+    turn         INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_character  ON inventory(character_id);
+CREATE INDEX IF NOT EXISTS idx_conditions_character ON character_conditions(character_id);
+CREATE INDEX IF NOT EXISTS idx_npcs_location        ON npcs(location_id);

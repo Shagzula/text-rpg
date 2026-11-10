@@ -1,0 +1,152 @@
+import random
+
+import pytest
+
+from rpg import rules
+from rpg.rules import (Character, Condition, SKILL_ABILITY, ability_modifier,
+                       proficiency_bonus, resolve_skill_check, skill_modifier)
+
+
+def fixed(*rolls):
+    it = iter(rolls)
+    return lambda: next(it)
+
+
+def never():
+    def roller():
+        raise AssertionError("should not roll")
+    return roller
+
+
+def make(level=1, skills=None, conditions=None, **scores):
+    base = {a: 10 for a in rules.ABILITIES}
+    base.update(scores)
+    return Character(name="T", level=level, scores=base, skills=skills or {},
+                     conditions=conditions or [])
+
+
+@pytest.mark.parametrize("score,mod", [(1, -5), (3, -4), (8, -1), (9, -1), (10, 0),
+                                       (11, 0), (12, 1), (15, 2), (20, 5), (30, 10)])
+def test_ability_modifier(score, mod):
+    assert ability_modifier(score) == mod
+
+
+@pytest.mark.parametrize("level,pb", [(1, 2), (4, 2), (5, 3), (8, 3), (9, 4),
+                                      (12, 4), (13, 5), (16, 5), (17, 6), (20, 6)])
+def test_proficiency_bonus(level, pb):
+    assert proficiency_bonus(level) == pb
+
+
+def test_proficiency_bonus_rejects_bad_level():
+    with pytest.raises(ValueError):
+        proficiency_bonus(0)
+
+
+def test_all_18_skills_mapped():
+    assert len(SKILL_ABILITY) == 18
+    assert set(SKILL_ABILITY.values()) <= set(rules.ABILITIES)
+    assert SKILL_ABILITY["athletics"] == "str" and SKILL_ABILITY["stealth"] == "dex"
+
+
+def test_skill_modifier_proficiency_and_expertise():
+    c = make(level=5, dex=16, skills={"stealth": "expertise", "acrobatics": "proficient"})
+    assert skill_modifier(c, "stealth") == 3 + 6
+    assert skill_modifier(c, "acrobatics") == 3 + 3
+    assert skill_modifier(c, "sleight of hand") == 3  # name normalized, unproficient
+    assert skill_modifier(c, "athletics", ability="dex") == 3  # ability override
+
+
+def test_condition_modifiers():
+    c = make(str=14, conditions=[Condition("tired", {"all_checks": -1}),
+                                 Condition("hurt arm", {"abilities": {"str": -2}}),
+                                 Condition("muddy", {"skills": {"stealth": -3}})])
+    assert skill_modifier(c, "athletics") == 2 - 1 - 2
+    assert skill_modifier(c, "stealth") == 0 - 1 - 3
+
+
+def test_auto_success_when_proficient_and_take_10_covers_dc():
+    c = make(level=3, skills={"athletics": "proficient"})  # +2
+    r = resolve_skill_check(c, "athletics", 12, roller=never())
+    assert r.success and r.auto_success and r.roll is None and r.outcome == "success"
+
+
+def test_no_auto_success_without_proficiency():
+    c = make(str=14)  # +2 but not proficient
+    r = resolve_skill_check(c, "athletics", 12, roller=fixed(5))
+    assert not r.auto_success and r.roll == 5 and r.total == 7 and not r.success
+    assert r.margin == -5
+
+
+def test_no_auto_success_above_max_dc():
+    c = make(level=17, str=20, skills={"athletics": "expertise"})  # +17
+    r = resolve_skill_check(c, "athletics", rules.AUTO_SUCCESS_MAX_DC + 1, roller=fixed(1))
+    assert not r.auto_success and r.roll == 1 and r.success  # 1 + 17 >= 16
+
+
+def test_impossible_fails_without_roll():
+    c = make(str=8)  # -1 ; DC 18 needs a 19
+    r = resolve_skill_check(c, "athletics", 18, roller=never())
+    assert r.impossible and not r.success and r.roll is None and r.consequences == []
+
+
+def test_boundary_needed_18_still_rolls():
+    c = make(str=8)  # -1 ; DC 17 needs an 18
+    r = resolve_skill_check(c, "athletics", 17, roller=fixed(18))
+    assert not r.impossible and r.success
+
+
+def test_natural_20_does_not_override_dc(monkeypatch):
+    monkeypatch.setattr(rules, "IMPOSSIBLE_NEEDED_ROLL", 99)  # disable filter
+    c = make(str=6)  # -2
+    r = resolve_skill_check(c, "athletics", 25, roller=fixed(20))
+    assert r.roll == 20 and r.total == 18 and not r.success
+
+
+def test_natural_1_does_not_auto_fail():
+    c = make(str=18)  # +4, not proficient
+    r = resolve_skill_check(c, "athletics", 5, roller=fixed(1))
+    assert r.success
+
+
+def test_last_ditch_success_applies_strain():
+    c = make(str=8)  # -1, DC 18 is impossible normally
+    r = resolve_skill_check(c, "athletics", 18, last_ditch=True, roller=fixed(15))
+    assert r.last_ditch and r.success and r.bonus == rules.DESPERATION_BONUS
+    assert r.total == 15 - 1 + 5
+    [cost] = r.consequences
+    assert cost["type"] == "condition" and cost["lasting"] and cost["name"] == "strained_str"
+    assert cost["effect"] == {"abilities": {"str": -1}}
+
+
+def test_last_ditch_failure_applies_injury():
+    c = make(str=8)
+    r = resolve_skill_check(c, "athletics", 18, last_ditch=True, roller=fixed(3))
+    assert r.last_ditch and not r.success
+    [cost] = r.consequences
+    assert cost["name"] == "injured_str" and cost["lasting"] and cost["effect"]["abilities"]["str"] == -2
+    assert r.to_dict()["injury_applied"]["name"] == "injured_str"
+
+
+def test_last_ditch_beyond_desperation_fails_without_roll_but_costs():
+    c = make(str=8)  # max 20 - 1 + 5 = 24
+    r = resolve_skill_check(c, "athletics", 25, last_ditch=True, roller=never())
+    assert r.impossible and r.last_ditch and not r.success and r.roll is None
+    assert r.consequences[0]["name"] == "injured_str"
+
+
+def test_last_ditch_ignored_on_auto_success():
+    c = make(level=3, skills={"athletics": "proficient"})
+    r = resolve_skill_check(c, "athletics", 10, last_ditch=True, roller=never())
+    assert r.auto_success and not r.last_ditch and r.consequences == []
+
+
+def test_injected_rng_is_deterministic():
+    c = make(dex=14)
+    a = resolve_skill_check(c, "stealth", 14, rng=random.Random(42))
+    b = resolve_skill_check(c, "stealth", 14, rng=random.Random(42))
+    assert a == b
+
+
+def test_unknown_skill_rejected():
+    with pytest.raises(ValueError):
+        resolve_skill_check(make(), "flying", 10)

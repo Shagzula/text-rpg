@@ -4,270 +4,66 @@ Minimal hybrid RPG engine: SQLite owns state and resolution,
 LLM is expected to propose actions and narrate outcomes.
 """
 
-import sqlite3
 import json
 import random
+import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, Callable
 
-DB_PATH = Path("rpg_state.db")
+from rpg import db, rules
+from rpg.db import get_connection, init_db, connect, default_db_path  # re-exported
+from rpg.rules import ability_modifier, proficiency_bonus, SKILL_ABILITY  # re-exported
 
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS characters (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    level           INTEGER DEFAULT 1,
-    str_score       INTEGER DEFAULT 10,
-    dex_score       INTEGER DEFAULT 10,
-    con_score       INTEGER DEFAULT 10,
-    int_score       INTEGER DEFAULT 10,
-    wis_score       INTEGER DEFAULT 10,
-    cha_score       INTEGER DEFAULT 10,
-    current_hp      INTEGER,
-    max_hp          INTEGER,
-    location_id     INTEGER,
-    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS character_skills (
-    character_id    INTEGER,
-    skill           TEXT NOT NULL,
-    proficient      INTEGER DEFAULT 0,
-    expertise       INTEGER DEFAULT 0,
-    PRIMARY KEY (character_id, skill)
-);
-
-CREATE TABLE IF NOT EXISTS character_conditions (
-    id              INTEGER PRIMARY KEY,
-    character_id    INTEGER,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    severity        INTEGER DEFAULT 1,
-    expires_on      TEXT,
-    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS item_templates (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    category        TEXT NOT NULL,
-    power_tier      INTEGER DEFAULT 1,
-    damage_dice     TEXT,
-    damage_type     TEXT,
-    properties      TEXT,
-    description     TEXT
-);
-
-CREATE TABLE IF NOT EXISTS inventory (
-    id              INTEGER PRIMARY KEY,
-    character_id    INTEGER,
-    template_id     INTEGER,
-    display_name    TEXT,
-    quantity        INTEGER DEFAULT 1,
-    equipped        INTEGER DEFAULT 0,
-    notes           TEXT,
-    acquired_at     TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS locations (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    area_tier       INTEGER DEFAULT 1,
-    parent_id       INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS npcs (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    location_id     INTEGER,
-    faction_id      INTEGER,
-    traits          TEXT,
-    is_major        INTEGER DEFAULT 0,
-    alive           INTEGER DEFAULT 1,
-    notes           TEXT
-);
-
-CREATE TABLE IF NOT EXISTS factions (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    description     TEXT
-);
-
-CREATE TABLE IF NOT EXISTS relationships (
-    id              INTEGER PRIMARY KEY,
-    character_id    INTEGER,
-    target_type     TEXT NOT NULL,
-    target_id       INTEGER NOT NULL,
-    value           INTEGER DEFAULT 0,
-    notes           TEXT
-);
-
-CREATE TABLE IF NOT EXISTS world_flags (
-    key             TEXT PRIMARY KEY,
-    value           TEXT,
-    updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
-);
-"""
+# Save file location: pass db_path explicitly, or set $RPG_DB_PATH.
+# Default is <project>/saves/rpg_state.db regardless of the current directory.
+DB_PATH: Path = default_db_path()
 
 # ---------------------------------------------------------------------------
-# Database helpers
+# Schema lives in rpg/schema.sql (created by rpg.db.init_db).
+# Ability / skill math lives in rpg/rules.py (pure, unit-tested).
 # ---------------------------------------------------------------------------
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    """Create tables if they do not exist."""
-    with get_connection() as conn:
-        conn.executescript(SCHEMA)
-        conn.commit()
+def get_skill_modifier(conn, character_id: int, skill: str, ability: Optional[str] = None) -> int:
+    """Return total modifier for a skill check (ability + proficiency/expertise + conditions)."""
+    return rules.skill_modifier(db.load_character(conn, character_id), skill, ability)
 
 # ---------------------------------------------------------------------------
-# Ability / skill math (D&D 5e style)
-# ---------------------------------------------------------------------------
-
-ABILITY_MAP = {
-    "str": "str_score",
-    "dex": "dex_score",
-    "con": "con_score",
-    "int": "int_score",
-    "wis": "wis_score",
-    "cha": "cha_score",
-}
-
-def ability_modifier(score: int) -> int:
-    return (score - 10) // 2
-
-def proficiency_bonus(level: int) -> int:
-    return 2 + (level - 1) // 4
-
-def get_skill_modifier(conn: sqlite3.Connection, character_id: int, skill: str, ability: str) -> int:
-    """Return total modifier for a skill check."""
-    char = conn.execute(
-        "SELECT level, str_score, dex_score, con_score, int_score, wis_score, cha_score FROM characters WHERE id = ?",
-        (character_id,)
-    ).fetchone()
-    if not char:
-        raise ValueError(f"Character {character_id} not found")
-
-    ability_score = char[ABILITY_MAP[ability]]
-    mod = ability_modifier(ability_score)
-    pb = proficiency_bonus(char["level"])
-
-    skill_row = conn.execute(
-        "SELECT proficient, expertise FROM character_skills WHERE character_id = ? AND skill = ?",
-        (character_id, skill)
-    ).fetchone()
-
-    if skill_row:
-        if skill_row["expertise"]:
-            mod += pb * 2
-        elif skill_row["proficient"]:
-            mod += pb
-
-    return mod
-
-# ---------------------------------------------------------------------------
-# Skill-check resolver
+# Skill-check resolver (DB-applying wrapper around rules.resolve_skill_check)
 # ---------------------------------------------------------------------------
 
 def resolve_skill_check(
     character_id: int,
     skill: str,
-    ability: str,
-    proposed_dc: int,
+    ability: Optional[str] = None,
+    proposed_dc: int = 12,
     is_last_ditch: bool = False,
-    auto_success_threshold: int = 8,
+    *,
+    roller: Optional[Callable[[], int]] = None,
+    rng: Optional[random.Random] = None,
+    db_path=None,
 ) -> Dict[str, Any]:
     """
-    Resolve a skill check according to the rules:
-    - Impossible actions fail unless last-ditch
-    - Proficient + high enough modifier = auto-success
-    - Otherwise roll
-    - Last-ditch success can apply injury
+    Resolve a skill check per DESIGN.md (see rpg/rules.py for exact thresholds):
+    - Proficient + 10 + modifier >= DC (DC <= 15) = auto-success, no roll
+    - Needs more than an 18 on the d20 = impossible, no roll (unless last-ditch)
+    - Last-ditch: +5, can succeed, ALWAYS applies a lasting condition (persisted)
+    - No natural-20 rule
     """
-    with get_connection() as conn:
-        modifier = get_skill_modifier(conn, character_id, skill, ability)
-        char = conn.execute("SELECT * FROM characters WHERE id = ?", (character_id,)).fetchone()
-
-        # Simple impossibility heuristic: if modifier is very low relative to DC
-        # and not last-ditch, fail hard.
-        if not is_last_ditch and (modifier + 5) < proposed_dc:
-            return {
-                "success": False,
-                "auto_success": False,
-                "impossible": True,
-                "roll": None,
-                "modifier": modifier,
-                "total": None,
-                "dc": proposed_dc,
-                "injury_applied": None,
-                "reason": "Action is beyond the character's capabilities"
-            }
-
-        # Auto-success for proficient characters on easy tasks
-        skill_row = conn.execute(
-            "SELECT proficient FROM character_skills WHERE character_id = ? AND skill = ?",
-            (character_id, skill)
-        ).fetchone()
-        is_proficient = skill_row and skill_row["proficient"]
-
-        if is_proficient and modifier >= auto_success_threshold and proposed_dc <= 12:
-            return {
-                "success": True,
-                "auto_success": True,
-                "impossible": False,
-                "roll": None,
-                "modifier": modifier,
-                "total": modifier + 10,  # representative
-                "dc": proposed_dc,
-                "injury_applied": None,
-                "reason": "Auto-success (proficient and capable)"
-            }
-
-        # Normal or last-ditch roll
-        roll = random.randint(1, 20)
-        total = roll + modifier
-        success = total >= proposed_dc
-
-        injury = None
-        if is_last_ditch and success:
-            # Example injury on last-ditch success
-            injury = {
-                "name": "strained_muscle",
-                "description": "Pushed past limits and suffered a strain",
-                "severity": 1
-            }
-            conn.execute(
-                "INSERT INTO character_conditions (character_id, name, description, severity) VALUES (?, ?, ?, ?)",
-                (character_id, injury["name"], injury["description"], injury["severity"])
-            )
-            conn.commit()
-
-        return {
-            "success": success,
-            "auto_success": False,
-            "impossible": False,
-            "roll": roll,
-            "modifier": modifier,
-            "total": total,
-            "dc": proposed_dc,
-            "injury_applied": injury,
-            "reason": "Rolled" if not is_last_ditch else "Last-ditch effort"
-        }
+    with connect(db_path if db_path is not None else DB_PATH) as conn:
+        char = db.load_character(conn, character_id)
+        result = rules.resolve_skill_check(
+            char, skill, proposed_dc, last_ditch=is_last_ditch, ability=ability,
+            roller=roller, rng=rng,
+        )
+        db.apply_check_consequences(conn, character_id, result)
+    return result.to_dict()
 
 # ---------------------------------------------------------------------------
 # Example action processing
 # ---------------------------------------------------------------------------
 
-def process_action_proposal(character_id: int, proposal: Dict[str, Any]) -> Dict[str, Any]:
+def process_action_proposal(character_id: int, proposal: Dict[str, Any], *, db_path=None,
+                            roller: Optional[Callable[[], int]] = None) -> Dict[str, Any]:
     """
     Take an LLM action proposal and return an engine result
     suitable for feeding back into the narration prompt.
@@ -278,12 +74,19 @@ def process_action_proposal(character_id: int, proposal: Dict[str, Any]) -> Dict
         result = resolve_skill_check(
             character_id=character_id,
             skill=proposal.get("skill", "athletics"),
-            ability=proposal.get("ability", "str"),
+            ability=proposal.get("ability"),
             proposed_dc=proposal.get("proposed_dc", 12),
             is_last_ditch=proposal.get("is_last_ditch", False),
+            db_path=db_path,
+            roller=roller,
         )
+        outcome_text = proposal.get("success_outcome") if result["success"] else proposal.get("failure_outcome")
+        must_mention = [t for t in [outcome_text] if t]
+        # Narration hints must match engine state: mention an injury only if one was applied.
+        if result["injury_applied"]:
+            must_mention.append(result["injury_applied"]["description"])
         result["narrative_constraints"] = {
-            "must_mention": [proposal.get("success_outcome") if result["success"] else proposal.get("failure_outcome")],
+            "must_mention": must_mention,
             "must_not_mention": ["dice", "roll", "modifier", "DC", "skill check"]
         }
         return result
@@ -299,27 +102,19 @@ def process_action_proposal(character_id: int, proposal: Dict[str, Any]) -> Dict
 # Demo / quick test
 # ---------------------------------------------------------------------------
 
-def demo():
+def demo(db_path=None, seed: Optional[int] = None):
     """Create a sample character and run a couple of checks."""
-    init_db()
-    with get_connection() as conn:
-        # Create a sample rogue
-        conn.execute(
-            """INSERT INTO characters (name, level, str_score, dex_score, current_hp, max_hp)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ("Test Rogue", 3, 10, 16, 24, 24)
+    path = init_db(db_path if db_path is not None else DB_PATH)
+    rng = random.Random(seed)
+    roller = lambda: rng.randint(1, 20)
+    with connect(path) as conn:
+        # Create a sample rogue (STR 10, DEX 16, level 3: PB +2)
+        char_id = db.create_character(
+            conn, "Test Rogue", level=3, scores={"str": 10, "dex": 16}, max_hp=24,
+            skills={"acrobatics": "proficient", "athletics": "proficient"},
         )
-        char_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute(
-            "INSERT INTO character_skills (character_id, skill, proficient) VALUES (?, ?, ?)",
-            (char_id, "acrobatics", 1)
-        )
-        conn.execute(
-            "INSERT INTO character_skills (character_id, skill, proficient) VALUES (?, ?, ?)",
-            (char_id, "athletics", 1)
-        )
-        conn.commit()
 
+    print(f"Save file: {path}")
     print(f"Created character id={char_id}")
 
     # Easy climb (should auto-succeed)
@@ -333,20 +128,20 @@ def demo():
         "failure_outcome": "You slip"
     }
     print("\n--- Easy climb ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_easy), indent=2))
+    print(json.dumps(process_action_proposal(char_id, proposal_easy, db_path=path, roller=roller), indent=2))
 
     # Hard door kick by low-STR character (should be impossible)
     proposal_impossible = {
         "action_type": "skill_check",
         "skill": "athletics",
         "ability": "str",
-        "proposed_dc": 20,
+        "proposed_dc": 21,  # +2 athletics would need a 19+: filtered as impossible
         "is_last_ditch": False,
         "success_outcome": "You smash the door",
         "failure_outcome": "The door does not budge"
     }
     print("\n--- Impossible door ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_impossible), indent=2))
+    print(json.dumps(process_action_proposal(char_id, proposal_impossible, db_path=path, roller=roller), indent=2))
 
     # Last-ditch version
     proposal_lastditch = {
@@ -359,8 +154,10 @@ def demo():
         "failure_outcome": "You hurt yourself and fail"
     }
     print("\n--- Last-ditch door ---")
-    print(json.dumps(process_action_proposal(char_id, proposal_lastditch), indent=2))
+    print(json.dumps(process_action_proposal(char_id, proposal_lastditch, db_path=path, roller=roller), indent=2))
 
 
 if __name__ == "__main__":
-    demo()
+    # Usage: python rpg_engine.py [db_path] [seed]   (or set RPG_DB_PATH)
+    demo(sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None,
+         int(sys.argv[2]) if len(sys.argv) > 2 else None)
