@@ -94,7 +94,8 @@ def trade_view(conn, p: Dict, key: str, band: str, status: str) -> Dict:
                 out.append(price(e, band, which))
             else:
                 t = conn.execute("SELECT name FROM item_templates WHERE key = ?", (e["item"],)).fetchone()
-                out.append({"item": e["item"], "name": t["name"] if t else e["item"], "qty": e.get("qty", 1)})
+                out.append({"item": e["item"], "name": e.get("name") or (t["name"] if t else e["item"]),
+                            "qty": e.get("qty", 1)})
         return out
     return {"key": key, "label": tr["label"], "status": status,
             "gives": side(tr.get("gives"), "gives"), "wants": side(tr.get("wants"), "wants")}
@@ -124,7 +125,8 @@ def resolve(turn, a: Dict, t) -> Dict:
     consequences, changes = [], []
     talk = {"npc": t.key, "approach": approach, "topic": a["topic"], "topic_text": a["topic_text"],
             "disposition_band_before": before, "disposition_band_after": before,
-            "requested_topic_status": "none" if approach in NO_SUBJECT else "unknown",
+            "requested_topic_status": "none" if approach in NO_SUBJECT or not (a["topic"] or a["topic_text"])
+            else "unknown",
             "allowed_topics": [], "refused_topics": [], "trade": None, "insight_read": None}
 
     def set_disp(d):
@@ -222,7 +224,9 @@ def _trade(turn, a, t, p, key, band, changes, consequences) -> Dict:
     for e in view["gives"]:
         if "item" in e:
             k = inv.next_item_key(conn, e["item"])
-            inv.add_item(conn, e["item"], character_id=cid, quantity=e["qty"], key=k)
+            tname = conn.execute("SELECT name FROM item_templates WHERE key = ?", (e["item"],)).fetchone()[0]
+            inv.add_item(conn, e["item"], character_id=cid, quantity=e["qty"], key=k,
+                         display_name=e["name"] if e["name"] != tname else None)
             changes.append({"type": "item_added", "key": k, "name": e["name"]})
     if not p["trades"][key].get("repeatable"):
         db.set_flag(conn, _trade_flag(t.key, key), True)

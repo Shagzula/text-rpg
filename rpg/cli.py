@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import db, llm as llm_mod
+from . import talk
 from .actions import process_action_proposal
 from .context import build_context, log_narration, recent_narrations
 from .world import find_player, seed_demo_slice
@@ -147,7 +148,9 @@ class Game:
                     return self.meta("/" + cmd)
                 self.out(f"(/{cmd} isn't supported yet. Type /help.)")
                 return None
-            narration = llm_mod.narrate_safely(self.llm, result, build_context(conn, self.cid))
+            after = build_context(conn, self.cid)
+            talk.voice(conn, self.llm, result, text, after)  # NPC lines -> result["dialogue"] (§g)
+            narration = llm_mod.narrate_safely(self.llm, result, after)
             log_narration(conn, self.cid, result["turn"] or 0, narration)
             db.save_rng_state(conn, self.rng)
         self.out(narration)
@@ -264,6 +267,7 @@ class Game:
         abil = "  ".join(ab(a, v) for a, v in s["abilities"].items())
         self.out(f"{s['name']}, level {s['level']} | {abil}")
         self.out("Skills: " + (", ".join(f"{k} ({v})" for k, v in s["skills"].items()) or "none"))
+        self.out(f"Purse: {s['gold']} coins")
         self.out(f"Condition: {ctx['hp_band']}" + ("; " + ", ".join(c["name"] for c in s["conditions"])
                                                      if s["conditions"] else ""))
 

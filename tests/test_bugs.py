@@ -291,10 +291,13 @@ def test_bug09_stats_show_condition_penalties(tmp_path):
 # BUG-10: talk with no target ---------------------------------------------------------------------
 
 def test_bug10_talk_without_target(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET location_id = NULL")  # nobody here: still a clean rejection
     p, r = say(demo, "talk")
     res = r["results"][0]
     assert (res["status"], res["detail"]) == ("rejected", "no_target") and r["time_passed"] is False
     assert "the it" not in llm_mod.MockLLM().narrate(r, build_context(*demo))
+    # (with exactly one NPC here, bare "talk" now talks to them: BUG-R04)
 
 
 # BUG-11: you attack only with what you hold ------------------------------------------------------

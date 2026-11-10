@@ -234,3 +234,14 @@ def test_guard_persona_uses_its_social_dc(g, caplog):
     with caplog.at_level("DEBUG", logger="rpg.debug"):
         run(g, say("intimidate", "the_lever", npc="npc_dozing_guard"), rng=Script(10))
     assert "'dc': 10" in caplog.text  # 12 - 2 + 0 (neutral)
+
+
+def test_no_subject_is_none_status(g):
+    assert run(g, say("insight"), rng=Script(1))["results"][0]["talk"]["requested_topic_status"] == "none"
+    assert run(g, say("ask"))["results"][0]["talk"]["requested_topic_status"] == "none"
+
+
+def test_trade_gives_can_name_the_instance(g):
+    r = run(g, say("trade", "trade_buy_torch"))["results"][0]
+    added = [c for c in r["state_changes"] if c["type"] == "item_added"][0]
+    assert added["name"] == "Torch" and inv.get_item(g["conn"], added["key"])["name"] == "Torch"

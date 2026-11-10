@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List
 
-from . import db, effects, rules
+from . import db, effects, personas, rules, talk
 from .inventory import list_inventory, list_location_items
 
 RECENT_NARRATIONS = 3
@@ -45,7 +45,7 @@ def location_exits(conn, location_id: int) -> List[Dict]:
 
 def player_sheet(conn, character_id: int) -> Dict:
     char = db.load_character(conn, character_id)
-    row = conn.execute("SELECT weapon_proficiencies FROM characters WHERE id = ?", (character_id,)).fetchone()
+    row = conn.execute("SELECT weapon_proficiencies, gold FROM characters WHERE id = ?", (character_id,)).fetchone()
     return {
         "name": char.name,
         "level": char.level,
@@ -55,6 +55,7 @@ def player_sheet(conn, character_id: int) -> Dict:
         "weapon_proficiencies": json.loads(row["weapon_proficiencies"]),
         "conditions": _conditions(conn, character_id),
         "features": [],  # no spells/features in the slice
+        "gold": row["gold"],  # coins, same unit as item_templates.value
     }
 
 
@@ -68,6 +69,18 @@ def _conditions(conn, character_id) -> List[Dict]:
              "timed": r["duration_turns"] is not None}
             for r in conn.execute("SELECT * FROM character_conditions WHERE character_id = ? ORDER BY id",
                                   (character_id,))]
+
+
+def npc_talk_context(conn, n) -> Dict:
+    """topics (public + secrets at/below the band), open trades at the band, last lines said.
+    Persona-less or defeated NPCs: all empty. Secret text and insight_tell never appear."""
+    p = personas.get(conn, n["id"]) if n["alive"] else None
+    if not p:
+        return {"topics": [], "trades": [], "recent_dialogue": talk.recent_dialogue(conn, n["id"])}
+    band = rules.disposition_band(n["disposition"])
+    return {"topics": personas.visible_topics(p, band),
+            "trades": [{"key": k, "label": p["trades"][k]["label"]} for k in talk.open_trades(conn, n["key"], p, band)],
+            "recent_dialogue": talk.recent_dialogue(conn, n["id"])}
 
 
 def build_context(conn, character_id: int) -> Dict:
@@ -91,7 +104,7 @@ def build_context(conn, character_id: int) -> Dict:
                          "hp_band": rules.hp_band(npc_hp(n), n["max_hp"]),
                          "out_of_reach": bool(n["out_of_reach"]),
                          "conditions": effects.npc_conditions(conn, n["id"]),
-                         "visible": lit})
+                         "visible": lit, **npc_talk_context(conn, n)})
         items = [] if not lit else [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
                   "state": i["state"], "out_of_reach": i["out_of_reach"]}
                  for i in list_location_items(conn, loc["id"])]

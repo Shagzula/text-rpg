@@ -77,7 +77,7 @@ trades:
     repeatable: true
   trade_buy_torch:
     label: "a torch"
-    gives: [{item: item_light_source, qty: 1}]
+    gives: [{item: item_light_source, qty: 1, name: Torch}]
     wants: [{gold: 5}]
     repeatable: true
   trade_sell_rope:

@@ -28,6 +28,11 @@ class LLMClient(Protocol):
     def narrate(self, result: Dict, context: Dict) -> str:
         """Engine result (contracts.md (b)) + context block -> second-person prose."""
 
+    def voice_npc(self, npc_persona_view: Dict, allowed_topics: List[Dict], result: Dict, context: Dict) -> Dict:
+        """Talk turns only, after the engine resolved: {"lines": [1-3 strings]} in the NPC's
+        voice. Sees the public persona and allowed_topics, never secrets (contracts v0.5 §g).
+        `result` = {player_text, talk, recent_dialogue}."""
+
 
 # ---------------------------------------------------------------------------
 # Narration post-processing
@@ -103,8 +108,25 @@ VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("use", "drink", "pull", "push", "apply", "light", "eat", "throw", "toss"), "use_item"),
     (("pick", "unlock", "lockpick"), "pick"),
     (("open", "force", "kick", "break", "smash", "bash", "shove"), "force"),
-    (("talk", "speak", "ask", "greet", "chat"), "talk"),
+    (("talk", "speak", "ask", "greet", "chat", "say", "hello", "hi", "persuade", "convince", "plead", "beg",
+      "lie", "deceive", "bluff", "trick", "threaten", "intimidate", "menace", "read", "study", "sense",
+      "buy", "purchase", "sell", "trade", "barter", "haggle", "bye", "goodbye", "farewell"), "talk"),
 ]
+TALK_APPROACH_WORDS = {
+    "persuade": "persuade", "convince": "persuade", "plead": "persuade", "beg": "persuade",
+    "lie": "deceive", "deceive": "deceive", "bluff": "deceive", "trick": "deceive",
+    "threaten": "intimidate", "intimidate": "intimidate", "menace": "intimidate",
+    "read": "insight", "study": "insight", "sense": "insight",
+    "buy": "trade", "purchase": "trade", "sell": "trade", "trade": "trade", "barter": "trade", "haggle": "trade",
+    "bye": "farewell", "goodbye": "farewell", "farewell": "farewell",
+    "greet": "small_talk", "hello": "small_talk", "hi": "small_talk", "chat": "small_talk",
+}
+TALK_SKILL = {"persuade": "persuasion", "deceive": "deception", "intimidate": "intimidation", "insight": "insight"}
+TALK_SUMMARY = {"ask": "Ask the {npc}{about}.", "persuade": "Try to persuade the {npc}{about}.",
+                "deceive": "Try to deceive the {npc}{about}.", "intimidate": "Try to intimidate the {npc}{about}.",
+                "insight": "Study the {npc} for what they are hiding{about}.", "small_talk": "Chat with the {npc}.",
+                "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}."}
+SUBJECT_SPLITS = (" about ", " regarding ", " for ", " into ", " that ", " to tell me about ", " to tell me ")
 KEY_PREFIXES = {"item", "npc", "loc", "pc"}  # slug prefixes are not words to match on (BUG-14)
 OOC_WORDS = {"quit": "quit", "exit": "quit", "save": "save", "load": "load", "help": "help",
              "stats": "stats", "undo": "undo"}
@@ -235,12 +257,53 @@ class MockLLM:
             action.update(action_type="skill_check", skill=skill,
                           intent_summary=f"{'Pick the lock on' if verb == 'pick' else 'Force open'} the {rest or 'door'}.")
         elif verb == "talk":
-            key, amb = self._match(rest, context, ("npc",), "npc")
-            self._apply_target(action, key, amb, rest, refs)
-            action.update(action_type="talk", est_difficulty="trivial", intent_summary=f"Talk to the {rest}.")
+            self._talk(text, rest, context, action, refs)
         if last_ditch:
             action["intent_summary"] = action["intent_summary"].rstrip(".") + ", desperately, whatever it costs."
         return {"actions": [action], "ooc": None, "unresolved_references": refs}
+
+    def _talk(self, text: str, rest: str, context: Dict, action: Dict, refs: List[str]) -> None:
+        """talk/ask/persuade/lie/threaten/read/buy/sell/bye ... -> approach, topic, topic_text."""
+        first = text.split()[0]
+        approach = TALK_APPROACH_WORDS.get(first, "ask")
+        npcs = [n for n in context.get("npcs_present", []) if n.get("status") == "alive"]
+        rest = re.sub(r"^(to|with|at)\s+", "", rest)
+        npc_txt, subject = rest, ""
+        if approach == "trade" and first in ("buy", "purchase", "sell"):
+            subject, _, npc_txt = rest.partition(" from ") if " from " in rest else rest.partition(" to ")
+        else:
+            for sep in SUBJECT_SPLITS:
+                if sep in f" {rest} ":
+                    npc_txt, _, subject = f" {rest} ".partition(sep)
+                    npc_txt, subject = npc_txt.strip(), subject.strip()
+                    break
+        key, amb = (self._match(npc_txt, context, ("npc",), "npc") if npc_txt else (None, []))
+        if key and key not in {n["key"] for n in context.get("npcs_present", [])} and len(npcs) == 1 and not subject:
+            key, subject = npcs[0]["key"], npc_txt  # "ask about the cellar" with one person here
+        if not npc_txt and len(npcs) == 1:
+            key = npcs[0]["key"]
+        self._apply_target(action, key, amb, npc_txt or "them", refs)
+        npc = next((n for n in context.get("npcs_present", []) if n["key"] == action["target"]), None)
+        topic, topic_text = None, (_strip_articles(subject) or None) if subject else None
+        if npc and subject:
+            pool = npc.get("trades", []) if approach == "trade" else npc.get("topics", [])
+            want = _words(subject) - STOPWORDS
+            if first == "sell":
+                pool = [t for t in pool if "sell" in t["key"]] or pool
+            elif first in ("buy", "purchase"):
+                pool = [t for t in pool if "sell" not in t["key"]] or pool
+            scored = sorted(((len(want & (_words(t["label"]) | _words(t["key"].replace("_", " ")))), t["key"])
+                             for t in pool), reverse=True)
+            if scored and scored[0][0]:
+                topic, topic_text = scored[0][1], None
+        if approach in ("small_talk", "farewell"):
+            topic, topic_text = None, None
+        name = npc["name"] if npc else (npc_txt or "them")
+        about = f" about {topic_text or subject}" if (topic_text or subject) and approach != "trade" else \
+            (f" for {subject}" if subject else "")
+        action.update(action_type="talk", skill=TALK_SKILL.get(approach), est_difficulty="medium",
+                      approach=approach, topic=topic, topic_text=topic_text,
+                      intent_summary=TALK_SUMMARY[approach].format(npc=name, about=about[:60]))
 
     def _door_target(self, phrase: str, context: Dict, pools):
         """Match a door-ish phrase; "the door"/"the lock" prefers the one locked exit, then
@@ -309,6 +372,37 @@ class MockLLM:
         else:
             action["target"] = key
 
+    # -- NPC voice (deterministic) ----------------------------------------------
+    BAND_OPENER = {"hostile": "Get away from me.", "unfriendly": "Make it quick.", "neutral": "",
+                   "friendly": "", "allied": ""}
+    TRADE_LINE = {"offered": "I can do {label}, if you can pay for it.", "completed": "Done. Pleasure doing business.",
+                  "refused": "Not trading that with you.", "unaffordable": "You can't cover that. Come back when you can."}
+
+    def voice_npc(self, npc_persona_view: Dict, allowed_topics: List[Dict], result: Dict, context: Dict) -> Dict:
+        talk = result["talk"]
+        phrases = npc_persona_view["voice"]["sample_phrases"] or ["Hm."]
+        band = talk.get("disposition_band_after") or "neutral"
+        lines = [self.BAND_OPENER.get(band, "")]
+        status, approach = talk.get("requested_topic_status"), talk.get("approach")
+        if allowed_topics:
+            lines += [t["text"] for t in allowed_topics]
+        elif talk.get("trade"):
+            tr = talk["trade"]
+            lines.append(self.TRADE_LINE[tr["status"]].format(label=tr.get("label") or "that"))
+        elif approach == "farewell":
+            lines.append("Off with you, then.")
+        elif approach == "small_talk":
+            lines.append(phrases[0])
+        elif status == "refused":
+            lines.append("That's not something I'll talk about.")
+        elif status == "unknown":
+            lines.append("Can't help you there.")
+        elif talk.get("outcome") == "failure":
+            lines.append("I don't think so.")
+        else:
+            lines.append(phrases[-1])
+        return {"lines": [l for l in lines if l][:3]}
+
     # -- narrator -------------------------------------------------------------
     def narrate(self, result: Dict, context: Dict) -> str:
         if result.get("opening"):
@@ -316,6 +410,7 @@ class MockLLM:
         lines = []
         if result.get("clarification_question"):
             lines.append(result["clarification_question"])
+        self._dialogue = list(result.get("dialogue") or [])
         for r in result.get("results", []):
             if r["outcome"] == "clarify":
                 continue
@@ -425,8 +520,8 @@ class MockLLM:
         elif at == "attack":
             out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on the {tname}." if ok
                        else f"{self.FAIL_WORD[r['degree']]}the {tname} avoids your attack.")
-        elif at == "talk" and r["reason"] == "no_check":
-            out.append(f"You speak with the {tname}. They hear you out.")
+        elif at == "talk" and "talk" in r:
+            out.append(self._talk_text(r, tname))
         elif ok and (r["state_changes"] or r["consequences"]) and at in ("take", "drop", "equip", "unequip", "use_item"):
             pass  # the changes below say what happened
         elif ok:
@@ -437,6 +532,42 @@ class MockLLM:
         out += [self._consequence_text(c, context) for c in r["consequences"]]
         text = " ".join(x for x in out if x)
         return text[0].upper() + text[1:] if text else text
+
+    APPROACH_OPEN = {"ask": "You put your question to the {n}.", "persuade": "You make your case to the {n}.",
+                     "deceive": "You spin the {n} a story.", "intimidate": "You lean on the {n}.",
+                     "insight": "You watch the {n} closely.", "small_talk": "You pass the time with the {n}.",
+                     "trade": "You talk trade with the {n}.", "farewell": "You take your leave of the {n}."}
+    BAND_BODY = {"hostile": "They glare at you.", "unfriendly": "They eye you coldly.", "neutral": "",
+                 "friendly": "They seem to warm to you.", "allied": "They lean in, on your side now."}
+
+    def _talk_text(self, r: Dict, tname: str) -> str:
+        t = r["talk"]
+        the = "" if " " not in tname else "the "  # one-word names ("Mara") read without an article
+        out = [self.APPROACH_OPEN.get(t["approach"], "You speak with the {n}.").replace("the {n}", the + "{n}")
+               .format(n=tname)]
+        if r["degree"] is not None or r["reason"] in ("auto_success",):
+            x = (f"{self.DEGREE_WORD[r['degree']]}it lands." if r["outcome"] == "success"
+                 else f"{self.FAIL_WORD[r['degree']]}it doesn't land.")
+            out.append(x[0].upper() + x[1:])
+        spoken = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] == t["npc"]]
+        for d in spoken:  # verbatim, in order
+            out.append(f'"{d["line"]}" {the}{d["speaker_name"]} says.')
+        self._dialogue = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] != t["npc"]]
+        if not spoken:
+            for a in t["allowed_topics"]:  # voice failed: brief indirect speech, topic text only
+                txt = a["text"].rstrip(".")
+                out.append(f"{(the + tname)[0].upper()}{(the + tname)[1:]} tells you that {txt[0].lower()}{txt[1:]}.")
+            if not t["allowed_topics"] and t["refused_topics"]:
+                out.append(f"{(the + tname)[0].upper()}{(the + tname)[1:]} won't be drawn on that.")
+            if t.get("trade") and not t["allowed_topics"]:
+                out.append({"offered": "They name their terms.", "completed": "The deal is struck.",
+                            "refused": "They shake their head.", "unaffordable": "You can't cover their price."}
+                           [t["trade"]["status"]])
+        if t.get("insight_read"):
+            out.append(t["insight_read"])
+        if t["disposition_band_after"] != t["disposition_band_before"]:
+            out.append(self.BAND_BODY.get(t["disposition_band_after"], ""))
+        return " ".join(x for x in out if x)
 
     @staticmethod
     def _change_text(c: Dict) -> str:
@@ -481,6 +612,8 @@ class MockLLM:
             return "It's hard to see in the dark."
         if t == "item_consumed":
             return "That was the last of it."
+        if t == "purse_changed":
+            return "Coins change hands." if c.get("direction") == "spent" else "Coins clink into your purse."
         return ""
 
 
@@ -517,6 +650,9 @@ class _KeyedProvider:
 
     def narrate(self, result: Dict, context: Dict) -> str:
         raise NotImplementedError(f"{self.name} narrator calls are not implemented yet (use RPG_LLM=mock)")
+
+    def voice_npc(self, npc_persona_view: Dict, allowed_topics: List[Dict], result: Dict, context: Dict) -> Dict:
+        raise NotImplementedError(f"{self.name} voice calls are not implemented yet (use RPG_LLM=mock)")
 
 
 class OpenAIClient(_KeyedProvider):

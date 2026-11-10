@@ -106,6 +106,8 @@ def validate(p: Dict, template_keys: Iterable[str]) -> Dict:
                     bad(f"trade {tk!r} {side}: unknown item template {e.get('item')!r}")
                 elif not isinstance(e.get("qty", 1), int) or e.get("qty", 1) < 1:
                     bad(f"trade {tk!r} {side}: qty must be a positive int")
+                elif e.get("name") is not None and (side != "gives" or any(ch.isdigit() for ch in str(e["name"]))):
+                    bad(f"trade {tk!r} {side}: optional name (gives only) must be digit-free")
     return p
 
 
