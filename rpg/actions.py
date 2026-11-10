@@ -28,6 +28,14 @@ MAX_ACTIONS = 3
 VALIDATION_CODES = ("item_not_owned", "target_not_present", "item_unusable", "out_of_reach", "impossible_action")
 IMPROVISED_DAMAGE = "1d4"
 UNARMED_DAMAGE = "1"
+DIRECTIONS = ("north", "south", "east", "west", "up", "down", "in", "out",
+              "northeast", "northwest", "southeast", "southwest")
+DIRECTION_ALIASES = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down",
+                     "ne": "northeast", "nw": "northwest", "se": "southeast", "sw": "southwest",
+                     "upstairs": "up", "downstairs": "down", "inside": "in", "outside": "out",
+                     **{d: d for d in ("north", "south", "east", "west", "up", "down", "in", "out",
+                                       "northeast", "northwest", "southeast", "southwest")}}
+BACK = "back"  # the exit leading to where you came from
 # Ways to get through something locked (an exit, or an item whose state is 'locked').
 LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
 TOOL_REQUIRED_METHODS = ("pick_lock",)  # impossible without a tool that enables it
@@ -209,7 +217,33 @@ class Turn:
                 raise Reject("target_not_present", "no_exit")
             return Target("exit", key, ex["description"] or loc["name"],
                           {**dict(ex), "to_name": loc["name"], "to_description": loc["description"]})
+        exit_target = self._direction_target(key)
+        if exit_target is not None:
+            return exit_target
         raise Reject("target_not_present", "unknown_key")
+
+    def _direction_target(self, word: str) -> Optional[Target]:
+        """'up', 'u', 'north', ... or 'back' -> the matching exit from here (contracts (a):
+        a move target may be a direction instead of a destination key)."""
+        word = word.strip().lower()
+        c = self.conn
+        if word == BACK:
+            prev = db.get_flag(c, f"last_location:{self.cid}")
+            if not prev:
+                raise Reject("target_not_present", "no_way_back")
+            row = c.execute("SELECT id FROM locations WHERE key = ?", (prev,)).fetchone()
+            ex = row and c.execute("SELECT * FROM location_exits WHERE from_location_id = ? AND to_location_id = ?",
+                                   (self.loc_id, row["id"])).fetchone()
+        elif word in DIRECTION_ALIASES:
+            ex = c.execute("SELECT * FROM location_exits WHERE from_location_id = ? AND direction = ?",
+                           (self.loc_id, DIRECTION_ALIASES[word])).fetchone()
+        else:
+            return None
+        if not ex:
+            raise Reject("target_not_present", "no_exit")
+        dest = c.execute("SELECT * FROM locations WHERE id = ?", (ex["to_location_id"],)).fetchone()
+        return Target("exit", dest["key"], ex["description"] or dest["name"],
+                      {**dict(ex), "to_name": dest["name"], "to_description": dest["description"]})
 
     def item(self, key: str, *, allow_scene=True, reach=True) -> Dict:
         """An item the actor holds or (allow_scene) one visible here; else item_not_owned."""
@@ -362,6 +396,8 @@ class Turn:
             if not check.success:
                 return self.result(a, target=t, check=check)
         dest = t.row["to_location_id"]
+        here = self.conn.execute("SELECT key FROM locations WHERE id = ?", (self.loc_id,)).fetchone()["key"]
+        db.set_flag(self.conn, f"last_location:{self.cid}", here)
         self.conn.execute("UPDATE characters SET location_id = ? WHERE id = ?", (dest, self.cid))
         changes = [{"type": "moved_to_location", "key": t.key, "name": t.row["to_name"]}]
         flag = f"visited:{t.key}"

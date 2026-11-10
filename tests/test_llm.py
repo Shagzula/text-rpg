@@ -63,8 +63,8 @@ def test_mock_interpreter_mapping(game, text, expect):
 def test_mock_unknown_things_get_best_guess_slugs(game):
     a, p = one(*game, "attack the dragon with my greatsword")
     assert a["target"] == "npc_dragon" and a["items_used"] == ["item_greatsword"] and p["unresolved_references"] == []
-    a, _ = one(*game, "go north")
-    assert a["target"] == "loc_north"
+    a, _ = one(*game, "go north")  # no such exit: the direction goes to the engine as-is
+    assert a["target"] == "north"
 
 
 @pytest.mark.parametrize("text", ["desperately kick the door", "try hard to force the door",

@@ -75,6 +75,9 @@ LAST_DITCH_PHRASES = ("try hard", "trying hard", "desperately", "with everything
 STOPWORDS = {"the", "a", "an", "my", "at", "to", "into", "on", "up", "with", "of", "some", "this", "that", "its", "it"}
 DIRECTIONS = ("north", "south", "east", "west", "up", "down", "in", "out", "northeast", "northwest",
               "southeast", "southwest")
+DIRECTION_WORDS = {"n": "north", "s": "south", "e": "east", "w": "west", "u": "up", "d": "down",
+                   "ne": "northeast", "nw": "northwest", "se": "southeast", "sw": "southwest",
+                   "upstairs": "up", "downstairs": "down", "back": "back", **{d: d for d in DIRECTIONS}}
 
 VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("i", "inv", "inventory"), "inventory"),
@@ -130,8 +133,14 @@ class MockLLM:
         if text in OOC_WORDS:
             return {"actions": [], "ooc": {"command": OOC_WORDS[text], "text": player_text}, "unresolved_references": []}
         verb, rest = self._split_verb(text)
-        if verb is None and text in DIRECTIONS:
+        if verb is None and text in DIRECTION_WORDS:
             verb, rest = "move", text
+        direction = None
+        if verb == "move":
+            raw = text.split()[1:] if text not in DIRECTION_WORDS else [text]
+            direction = next((DIRECTION_WORDS[w] for w in raw if w in DIRECTION_WORDS and w not in ("in", "out")), None)
+            if direction is None and raw and raw[0] in ("in", "out") and len(raw) == 1:
+                direction = raw[0]
         action = {"action_type": "other", "skill": None, "target": None, "items_used": [], "last_ditch": last_ditch,
                   "est_difficulty": "medium", "intent_summary": f"Try to {text.rstrip('.')}.",
                   "clarification_needed": False, "clarification_question": None}
@@ -150,12 +159,17 @@ class MockLLM:
                 action["target"] = (context.get("location") or {}).get("key")
                 action["intent_summary"] = "Look around."
         elif verb == "move":
-            key, amb = self._match(rest, context, ("exit",), "loc")
-            self._apply_target(action, key, amb, rest, refs)
-            action.update(action_type="move", est_difficulty="trivial",
-                          intent_summary=f"Go {rest}." if rest in DIRECTIONS else f"Go to the {rest}.")
-            if text.startswith("climb"):
-                action.update(skill="athletics", est_difficulty="easy")
+            exits = (context.get("location") or {}).get("exits", [])
+            if direction:
+                # a direction: the matching exit's destination if listed, else let the engine say "no way"
+                match = next((e["to"] for e in exits if e["direction"] == direction), None)
+                action["target"] = match or direction
+                summary = "Go back." if direction == "back" else f"Go {direction}."
+            else:
+                key, amb = self._match(rest, context, ("exit",), "loc")
+                self._apply_target(action, key, amb, rest, refs)
+                summary = f"Go to the {rest}."
+            action.update(action_type="move", est_difficulty="trivial", intent_summary=summary)
         elif verb in ("take", "drop", "equip", "unequip"):
             pools = {"take": ("item",), "drop": ("inv",), "equip": ("inv",), "unequip": ("inv",)}[verb]
             key, amb = self._match(rest, context, pools, "item")
