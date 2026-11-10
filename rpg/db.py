@@ -133,7 +133,19 @@ def load_character(conn, character_id: int) -> Character:
             skills[s["skill"]] = "proficient"
     return Character(id=r["id"], name=r["name"], level=r["level"],
                      scores={a: r[a + "_score"] for a in ABILITIES}, skills=skills,
-                     conditions=load_conditions(conn, character_id))
+                     conditions=load_conditions(conn, character_id),
+                     weapon_proficiencies=json.loads(r["weapon_proficiencies"]))
+
+
+def set_flag(conn, key: str, value) -> None:
+    conn.execute("""INSERT INTO world_flags (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP""",
+                 (key, json.dumps(value)))
+
+
+def get_flag(conn, key: str, default=None):
+    row = conn.execute("SELECT value FROM world_flags WHERE key = ?", (key,)).fetchone()
+    return default if row is None else json.loads(row["value"])
 
 
 def add_condition(conn, character_id: int, cond: Condition) -> int:

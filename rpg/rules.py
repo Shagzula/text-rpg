@@ -122,6 +122,7 @@ class Character:
     skills: Dict[str, str] = field(default_factory=dict)  # skill -> "proficient" | "expertise"
     conditions: List[Condition] = field(default_factory=list)
     id: Optional[int] = None
+    weapon_proficiencies: List[str] = field(default_factory=lambda: ["simple"])
 
     def proficiency(self, skill: Optional[str]) -> Optional[str]:
         return self.skills.get(normalize_skill(skill)) if skill else None
