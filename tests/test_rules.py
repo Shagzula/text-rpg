@@ -260,3 +260,59 @@ def test_hp_band(hp, band):
 def test_unknown_skill_rejected():
     with pytest.raises(ValueError):
         resolve_skill_check(make(), "flying", 10)
+
+
+def test_advantage_keeps_higher_and_disadvantage_lower():
+    c = make()
+    r = resolve_skill_check(c, "athletics", 10, roller=fixed(4, 15), advantage=True)
+    assert r.roll == 15 and r.rolls == [4, 15] and r.advantage == 1 and r.success
+    r = resolve_skill_check(c, "athletics", 10, roller=fixed(15, 4), disadvantage=True)
+    assert r.roll == 4 and r.advantage == -1 and not r.success
+    r = resolve_skill_check(c, "athletics", 10, roller=fixed(7), advantage=True, disadvantage=True)
+    assert r.roll == 7 and r.rolls == [7] and r.advantage == 0  # cancel
+
+
+def test_condition_grants_advantage_and_disadvantage():
+    braced = Condition("braced", {"advantage": ["str", "con"], "disadvantage": ["wis"]})
+    c = make(conditions=[braced])
+    assert resolve_skill_check(c, "athletics", 10, roller=fixed(3, 12)).roll == 12
+    assert resolve_skill_check(c, "con", 10, roller=fixed(3, 12)).roll == 12
+    assert resolve_skill_check(c, "insight", 10, roller=fixed(12, 3)).roll == 3
+    assert resolve_skill_check(c, "stealth", 10, roller=fixed(12)).rolls == [12]
+    assert rules.resolve_attack(c, "str", 10, proficient=False, roller=fixed(2, 18)).roll == 18
+    # condition advantage + external disadvantage cancel
+    assert resolve_skill_check(c, "athletics", 10, roller=fixed(5), disadvantage=True).rolls == [5]
+
+
+def test_advantage_not_rolled_when_auto_or_impossible():
+    c = make(level=3, skills={"athletics": "proficient"})
+    assert resolve_skill_check(c, "athletics", 10, advantage=True, roller=never()).auto_success
+    assert resolve_skill_check(make(), "athletics", 25, advantage=True, roller=never()).impossible
+
+
+def test_advantage_numbers_stay_out_of_narration():
+    r = resolve_skill_check(make(), "athletics", 10, roller=fixed(4, 15), advantage=True)
+    n = r.to_narration_dict()
+    assert "rolls" not in n and "advantage" not in n
+
+
+@pytest.mark.parametrize("text,turns", [("1 round", 1), ("10 minutes or 1 check", 10), ("1 hour", 60),
+                                        ("2 hours", 120), (None, None), ("until dawn", None), (3, 3)])
+def test_duration_turns(text, turns):
+    assert rules.duration_turns(text) == turns
+
+
+def _eq(slot, **stats):
+    return {"slot": slot, "stats": stats}
+
+
+@pytest.mark.parametrize("dex,equipped,ac", [
+    (14, [], 12),                                                         # 10 + 2
+    (14, [_eq("body", base_ac=11, dex_cap=None)], 13),                    # leather
+    (18, [_eq("body", base_ac=12, dex_cap=2)], 14),                       # hide, capped
+    (14, [_eq("body", base_ac=16, dex_cap=0)], 16),                       # chain
+    (14, [_eq("body", base_ac=11, dex_cap=None), _eq("off_hand", ac_bonus=1)], 14),  # + buckler
+    (8, [_eq("feet", ac_bonus=0), _eq("main_hand", damage="1d6")], 9),    # accessories/weapons add nothing
+])
+def test_armor_defense(dex, equipped, ac):
+    assert rules.armor_defense(dex, equipped) == ac

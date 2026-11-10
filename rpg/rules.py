@@ -19,6 +19,10 @@ House rules (from DESIGN.md), all tunable via the constants below:
   the skill. No proficiency applies, so they never auto-succeed.
 * Degree band (narration): |margin| 0-4 narrow, 5-9 clear, 10+ overwhelming.
   null whenever nothing was rolled (auto-success, impossible without a roll).
+* Advantage / disadvantage (5e): roll 2d20, keep the higher / lower. Any source
+  of each cancels out to a single straight roll. Sources: conditions
+  (effect "advantage"/"disadvantage": lists of abilities or skills), tools
+  (skill_bonus grants: advantage), darkness (perception/investigation).
 * Attacks (resolve_attack): same pipeline vs the target's defense DC, with
   modifier = STR/DEX mod (+ PB if proficient) + conditions; never auto-succeed.
 """
@@ -28,7 +32,7 @@ import logging
 import random
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 AUTO_SUCCESS_MAX_DC = 15
 IMPOSSIBLE_NEEDED_ROLL = 18
@@ -104,6 +108,11 @@ class Condition:
     source: Optional[str] = None
     description: Optional[str] = None
     severity: int = 1
+
+    def grants(self, kind: str, skill: Optional[str], ability: str) -> bool:
+        """kind = 'advantage' | 'disadvantage'; matches an ability or skill listed in the effect."""
+        wanted = (self.effect or {}).get(kind) or []
+        return ability in wanted or (skill is not None and skill in wanted) or "all" in wanted
 
     def check_modifier(self, skill: Optional[str], ability: str) -> int:
         e = self.effect or {}
@@ -187,6 +196,8 @@ class CheckResult:
     needed_roll: int  # d20 face needed to succeed (after modifier and bonus)
     reason: str
     consequences: List[Dict] = field(default_factory=list)  # e.g. [{"type": "condition", ...}]
+    advantage: int = 0  # +1 advantage, -1 disadvantage (debug only)
+    rolls: List[int] = field(default_factory=list)  # all d20s rolled (debug only)
 
     @property
     def outcome(self) -> str:
@@ -213,7 +224,8 @@ class CheckResult:
         }
 
     def log_debug(self, **context) -> None:
-        keys = ("skill", "ability", "dc", "roll", "modifier", "bonus", "total", "margin", "needed_roll", "reason")
+        keys = ("skill", "ability", "dc", "roll", "rolls", "advantage", "modifier", "bonus", "total", "margin",
+                "needed_roll", "reason")
         info = {k: getattr(self, k) for k in keys}
         info["costs"] = [c.get("name") for c in self.consequences]
         debug_log.debug("check %s", {**info, **context})
@@ -246,6 +258,17 @@ def _default_roller(rng: Optional[random.Random]) -> Roller:
     return lambda: r.randint(1, 20)
 
 
+def net_advantage(advantage: bool, disadvantage: bool) -> int:
+    """+1 advantage, -1 disadvantage, 0 straight (both cancel)."""
+    return int(advantage) - int(disadvantage)
+
+
+def condition_advantage(char: Character, skill: Optional[str], ability: str) -> Tuple[bool, bool]:
+    adv = any(c.grants("advantage", skill, ability) for c in char.conditions)
+    dis = any(c.grants("disadvantage", skill, ability) for c in char.conditions)
+    return adv, dis
+
+
 def resolve_skill_check(
     char: Character,
     skill: str,
@@ -255,13 +278,18 @@ def resolve_skill_check(
     ability: Optional[str] = None,
     roller: Optional[Roller] = None,
     rng: Optional[random.Random] = None,
+    advantage: bool = False,
+    disadvantage: bool = False,
 ) -> CheckResult:
     """Resolve a check. `skill` is a 5e skill name or a raw ability ('str').
-    Pure: returns consequences, does not persist them."""
+    Condition advantage/disadvantage is included automatically; pass extra
+    sources (tools, darkness) via advantage/disadvantage. Pure."""
     skill, ability = split_check(skill, ability)
     mod = skill_modifier(char, skill or ability, ability)
+    cadv, cdis = condition_advantage(char, skill, ability)
     return resolve_check(skill, ability, dc, mod, can_auto=bool(char.proficiency(skill)),
-                         last_ditch=last_ditch, roller=roller or _default_roller(rng))
+                         last_ditch=last_ditch, roller=roller or _default_roller(rng),
+                         adv=net_advantage(advantage or cadv, disadvantage or cdis))
 
 
 def resolve_attack(
@@ -273,18 +301,27 @@ def resolve_attack(
     last_ditch: bool = False,
     roller: Optional[Roller] = None,
     rng: Optional[random.Random] = None,
+    advantage: bool = False,
+    disadvantage: bool = False,
 ) -> CheckResult:
     """Attack check vs a defense DC. Same impossibility/last-ditch rules; no auto-success."""
     ability = normalize_ability(ability)
     mod = skill_modifier(char, ability) + (proficiency_bonus(char.level) if proficient else 0)
+    cadv, cdis = condition_advantage(char, None, ability)
     return resolve_check(None, ability, defense_dc, mod, can_auto=False,
-                         last_ditch=last_ditch, roller=roller or _default_roller(rng))
+                         last_ditch=last_ditch, roller=roller or _default_roller(rng),
+                         adv=net_advantage(advantage or cadv, disadvantage or cdis))
 
 
 def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_auto: bool,
-                  last_ditch: bool, roller: Roller) -> CheckResult:
+                  last_ditch: bool, roller: Roller, adv: int = 0) -> CheckResult:
     """Core rules pipeline shared by skill checks and attacks."""
     needed = dc - mod  # d20 result needed on a normal roll
+    rolls: List[int] = []
+
+    def d20() -> int:
+        rolls.extend([roller()] + ([roller()] if adv else []))
+        return max(rolls) if adv > 0 else min(rolls) if adv < 0 else rolls[0]
 
     def result(success, *, auto=False, impossible=False, ld=False, roll=None,
                bonus=0, reason="", consequences=()):
@@ -294,6 +331,7 @@ def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_
             impossible=impossible, last_ditch=ld, roll=roll, modifier=mod, bonus=bonus,
             total=total, margin=None if total is None else total - dc,
             needed_roll=dc - mod - bonus, reason=reason, consequences=list(consequences),
+            advantage=adv, rolls=list(rolls),
         )
 
     # 1. Auto-success: proficient, reasonable DC, and taking 10 clears it.
@@ -308,7 +346,7 @@ def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_
             return result(False, impossible=True, ld=True, bonus=bonus,
                           reason="impossible_even_last_ditch",
                           consequences=[{"type": "condition", **asdict(cost)}])
-        roll = roller()
+        roll = d20()
         success = roll + mod + bonus >= dc
         cost = last_ditch_cost(ability, success, skill)
         return result(success, ld=True, roll=roll, bonus=bonus, reason="last_ditch",
@@ -319,7 +357,7 @@ def resolve_check(skill: Optional[str], ability: str, dc: int, mod: int, *, can_
         return result(False, impossible=True, reason="impossible")
 
     # 4. Normal roll. No natural-20/natural-1 special cases.
-    roll = roller()
+    roll = d20()
     return result(roll + mod >= dc, roll=roll, reason="rolled")
 
 
@@ -360,3 +398,34 @@ def disposition_band(value: int) -> str:
     if value < 10:
         return "neutral"
     return "friendly" if value < 50 else "allied"
+
+
+_DURATION_RE = re.compile(r"(\d+)\s*(round|turn|minute|min|hour|hr)s?", re.I)
+
+
+def duration_turns(text) -> Optional[int]:
+    """'1 round' -> 1, '10 minutes or 1 check' -> 10, '1 hour' -> 60 (1 turn ~ 1 minute,
+    a round counts as one turn). None/unparseable -> None."""
+    if text is None:
+        return None
+    if isinstance(text, int):
+        return text
+    m = _DURATION_RE.search(str(text))
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    return n * 60 if unit in ("hour", "hr") else n
+
+
+def armor_defense(dex_score: int, equipped: List[Dict]) -> int:
+    """Player defense DC (5e AC): body armor with base_ac -> base_ac + DEX mod (capped by
+    dex_cap; null = uncapped), else 10 + DEX mod; plus ac_bonus from every other equipped
+    item (shields, accessories)."""
+    dex = ability_modifier(dex_score)
+    body = next((i for i in equipped if i.get("slot") == "body" and i["stats"].get("base_ac") is not None), None)
+    if body:
+        cap = body["stats"].get("dex_cap")
+        base = body["stats"]["base_ac"] + (dex if cap is None else min(dex, cap))
+    else:
+        base = 10 + dex
+    return base + sum(int(i["stats"].get("ac_bonus") or 0) for i in equipped if i is not body)
