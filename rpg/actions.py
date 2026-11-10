@@ -642,7 +642,12 @@ class Turn:
                 "SELECT * FROM npcs WHERE location_id = ? AND alive = 1 AND out_of_reach = 0", (self.loc_id,))]
         else:
             raise Reject("impossible_action", "not_a_creature")
-        cons = [effects.npc_save_condition(self.conn, n, item, self.rng, self.turn) for n in npcs]
+        cons = []
+        for n in npcs:
+            cons.append(effects.npc_save_condition(self.conn, n, item, self.rng, self.turn))
+            if rules.disposition_band(n["disposition"]) != "hostile":  # it's an attack, near enough
+                self.conn.execute("UPDATE npcs SET disposition = -100 WHERE id = ?", (n["id"],))
+                cons.append({"type": "npc_disposition_changed", "key": n["key"], "to": "hostile"})
         changes = []
         for c in self._consume(item):
             (changes if c["type"] == "item_removed" else cons).append(c)

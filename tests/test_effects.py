@@ -299,3 +299,10 @@ def test_lockpicks_open_a_locked_item(world):
     r = run(world, act("skill_check", skill="sleight_of_hand", target="item_strongbox"), rng=Script(15))
     assert r["results"][0]["state_changes"] == [{"type": "entity_state", "key": "item_strongbox",
                                                 "field": "state", "from": "locked", "to": "open"}]
+
+
+def test_flash_powder_angers_a_neutral_npc(world):
+    give(world, "item_flash_powder")
+    r = run(world, act("use_item", target="npc_dozing_guard", items_used=["item_flash_powder"]), rng=Script(5))
+    assert {"type": "npc_disposition_changed", "key": "npc_dozing_guard", "to": "hostile"} in r["results"][0]["consequences"]
+    assert r["npc_actions"][0]["reason"] == "blinded"
