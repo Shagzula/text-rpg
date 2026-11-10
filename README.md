@@ -5,11 +5,12 @@ SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `d
 
 ## Layout
 - `rpg_engine.py` - Dan's starter, now a thin API + demo on top of `rpg/`
-- `rpg/schema.sql` - SQLite schema (v2, foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
+- `rpg/schema.sql` - SQLite schema (v3; v2 saves migrate on open; foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
 - `rpg/db.py` - `init_db(path)`, connections, character/condition load+save
 - `rpg/rules.py` - pure 5e math, `resolve_skill_check()`, `resolve_attack()`, dice, HP/disposition bands
 - `rpg/inventory.py` - item helpers by key: add/remove/transfer/list/has, equip/unequip with slot conflicts
 - `rpg/actions.py` - `process_action_proposal(conn, character_id, proposal, rng=None)`: proposal -> narrator result
+- `rpg/effects.py` - NPC counterattacks, player defense, light/darkness, tools, item conditions, timers
 - `rpg/context.py` - `build_context(conn, character_id)`: the prompt context block; narration log
 - `rpg/llm.py` - `LLMClient` protocol, `MockLLM`, narration post-processing, provider factory (`RPG_LLM`)
 - `rpg/world.py` - built-in demo slice
@@ -25,13 +26,28 @@ python3 -m rpg --load mysave    # load a save slot at start
 python3 -m rpg --new --seed 5   # deterministic dice
 python3 rpg_engine.py play ...  # same CLI via Dan's starter file
 ```
-Type plain actions: `look`, `go east`, `take crowbar`, `pick the lock`, `desperately kick the door`,
-`down`, `pull lever`, `attack guard`, `drink healing draught`, `i`, `rest`, `wait`.
+Type plain actions: `look`, `go east`, `take crowbar`, `pick the lock`, `use crowbar on door`,
+`desperately kick the door`, `light torch`, `down` / `d`, `up` / `u`, `back`, `pull lever`, `attack guard`,
+`throw flash powder at guard`, `drink tonic`, `drink healing draught`, `i`, `rest`, `wait`.
+Directions: `north`...`southwest`, `up`, `down`, `in`, `out`, and `n s e w ne nw se sw u d`, alone or after
+`go`/`walk`/`head`/`climb`. Input over 300 characters is refused without spending a turn.
+Anything the engine can't model ("cast fireball", "xyzzy") is answered "Nothing happens" and costs no turn.
 Meta commands: `/save [name]`, `/load [name]`, `/saves`, `/stats`, `/debug` (show hidden check numbers),
 `/help`, `/quit`. Typing `quit`, `save` or `help` without the slash works too.
 
-Demo slice: Town Square (Mara, a crowbar) -> east -> Storeroom (dozing guard, hanging lamp, locked
-iron-banded door, DC 15) -> down -> Cellar (rope, a lever that sets a flag).
+Demo slice: Town Square (Mara, a crowbar, a bracing tonic) -> east -> Storeroom (dozing guard, hanging
+lamp, flash powder, locked iron-banded door, DC 15) -> down -> Cellar (**dark**: light your torch first;
+rope, a lever that sets a flag). You start with a shortsword, boots, a healing draught, lockpicks, a torch
+and rations.
+
+Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
+your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
+12 HP, +3, 1d6) is a real fight for the 10-HP premade (defense 12). Rest heals half your missing HP, or
+to full if you carry rations (one is eaten); it's blocked while a hostile NPC is present.
+
+**Death** (provisional, `rpg/cli.py: death_policy`): at 0 HP the run ends after the narration and you
+choose: load your most recent save slot, start a new game, or quit. Continuing a dead working save goes
+straight to that choice.
 
 ### Saves
 - The **working save** is one SQLite file: `--db PATH`, else `$RPG_DB_PATH`, else `saves/rpg_state.db`
@@ -40,6 +56,9 @@ iron-banded door, DC 15) -> down -> Cellar (rope, a lever that sets a flag).
 - `/save NAME` snapshots the working file to `slot_NAME.db` in the same directory with SQLite's online
   backup API (a consistent copy). `/load NAME` copies a slot back over the working file. Each slot is a
   complete, independent game, and `save_games` inside it records the name and turn. `/saves` lists slots.
+- The **dice state is saved with the game** (after every turn, in `world_flags._rng_state`), so continuing
+  or loading a slot resumes the same dice stream. `--seed` only seeds a game with no stored dice yet
+  (a `--new` game).
 - `saves/` and `*.db` are git-ignored.
 
 ### Environment variables
@@ -51,7 +70,7 @@ iron-banded door, DC 15) -> down -> Cellar (rope, a lever that sets a flag).
 | `RPG_LLM_MODEL` | model name for a real provider |
 
 Mock mode (`rpg/llm.py: MockLLM`) maps text to proposals with deterministic keyword rules and narrates
-with templates. Narration always ends with "What do you do?": a missing closing line is appended, and
+with templates. Narration ends with "What do you do?" (except when you die): a missing closing line is appended, and
 empty or malformed output (JSON, markup, code fences) is regenerated once. A malformed proposal
 re-prompts the interpreter once, then shows a short "try rephrasing" message without spending a turn.
 
@@ -75,9 +94,14 @@ python3 rpg_engine.py [db_path] [seed]                   # engine JSON demo (thr
   (`narrow` 0-4 / `clear` 5-9 / `overwhelming` 10+ margin; null when nothing was rolled), reason,
   flags, consequences, state changes, and no numbers. Numbers go to the `rpg.debug` logger via `log_debug()`.
 - **HP bands**: `rules.hp_band()` returns unhurt / scratched / wounded / badly_wounded / near_death / down.
+- **Advantage / disadvantage**: 2d20 keep higher / lower; both cancel. Disadvantage blocks auto-success.
+  From conditions (e.g. the bracing tonic), relevant tools (crowbar: athletics), darkness (perception /
+  investigation), and attacking a blinded NPC.
+- **Conditions don't stack**: re-applying one you have keeps a single row (the stronger effect wins).
+  Timed conditions and lit lights tick down each turn that spends time.
 
 ## Turn API
-See `docs/contracts.md` (v0.3) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.4) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db

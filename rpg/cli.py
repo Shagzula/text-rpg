@@ -32,7 +32,7 @@ from .context import build_context, log_narration, recent_narrations
 from .world import find_player, seed_demo_slice
 
 HELP = """Type what you want to do in plain words, e.g. "look", "go east", "take crowbar",
-"pick the lock on the door", "desperately kick the door", "attack guard", "i".
+"pick the lock", "light torch", "desperately kick the door", "attack guard", "rest", "i".
 Meta commands:
   /save [name]   save to a slot (default: quicksave)
   /load [name]   load a slot (default: quicksave)
