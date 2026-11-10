@@ -1,0 +1,438 @@
+# Tier-1 Item Templates (v0.6, Nov 10, 2026 CST)
+# Setting-neutral placeholder names: rename once Dan picks a setting. Item NAMES contain no digits;
+# quantities live in stats (quantity, length_ft, days...).
+# Mechanics follow D&D 5e baselines (DESIGN.md: 5e abilities/skills/proficiency).
+# Shape AGREED (matches contracts.md v0.5), see schemas_proposed.md section c. All templates load via rpg.db.add_item_template().
+# Engine-read stats keys (v0.5): damage, properties, range, proficiency, improvised_damage, effect, amount, condition,
+#   uses, check {skill, est_difficulty}, dc, use_sets_flag, base_ac, dex_cap, ac_bonus, enables, skill_bonus {skill, grants},
+#   duration, save {ability, est_difficulty}, condition_effect, condition_name.
+#   `effect` is an engine enum: heal | cure_condition | buff | condition | light | sustenance.
+#   Descriptive-only text lives in `use_note`, `buff`, `side_effect` (shown as prose, no mechanics).
+#   condition_effect shapes: player buff -> {advantage: [...], disadvantage: [...], expires_after_check: [...]}
+#     (effects.BUFF_EFFECTS shape); NPC condition (flash powder) -> {no_attack: true} (npc_conditions.effect shape).
+#   Durations: "N round(s)" = N turns, "N minute(s)" = N turns, "N hour(s)" = 60N turns (1 turn ~ 1 minute).
+#
+# IMPROVISED LOCKPICKING (Lead decision; implemented in contracts.md v0.5, actions.IMPROVISED_PICK_TAG):
+#   - Real lock tool (stats.enables: [pick_lock], e.g. item_lockpicks): normal DC (authored unlock_dc or hint).
+#   - No lock tool, but holding an item tagged `improvised_pick` (item_knife; future wire/pin items):
+#     pick_lock allowed at DC very_hard (25), or the authored DC if higher. The held item is used
+#     automatically (added to the result's items_used).
+#   - Neither: rejected impossible_action / needs_tool.
+# Item names contain no digits (load-time check since v0.5). Trade display names (persona `gives[].name`) too.
+
+# Field layout (Engine Coder decision):
+#   Top-level columns: id, name, category, power_tier, slot, value, weight, tags, notes (-> description)
+#   Everything else, including subcategory, lives in `stats` (JSON column).
+#   Categories: weapon | armor | shield | ammo | consumable | tool | utility | misc
+#   ids: item_<slug>. Inventory keys in the LLM context use the same slug style.
+#
+# Units / conventions:
+#   value  = base currency units, 1 unit ~ a 5e silver piece (10 units ~ 1 gp).
+#   weight = lb-equivalent.
+#   slot   = main_hand | off_hand | two_hands | body | head | hands | feet | belt | none
+#   damage = 5e dice strings. Engine adds the ability modifier (STR, or DEX for finesse/ranged) + proficiency on the attack check.
+#   Tier 1 = what a starting character finds or buys in the hub town and first dungeon. No magic bonuses (+1) at tier 1.
+#   Slice house rules (KEPT per Lead): only body armor sets base AC. head/hands/feet pieces give minor perks.
+#     Buckler +1 AC. Heavy two-hander gives disadvantage at STR < 13. Bracing Tonic.
+#
+# Scarcity (Lead decision):
+#   Every item has two tags: rarity_<common|uncommon|rare> and avail_<shop|limited_stock|loot_only>.
+#     shop          = always buyable in the hub town
+#     limited_stock = shop carries 0-1 at a time, or quest/dungeon placement
+#     loot_only     = never sold at tier 1. Strong-enemy drops or a quest reward.
+#   Suggested starting purse: 60 units (enough for a little basic gear, e.g. rope + light + rations + bandages).
+#   Suggested premade starting kit (placeholder until the setting/character is chosen):
+#     item_short_blade (equipped), item_leather_armor (equipped), item_travel_boots (equipped),
+#     item_healing_draught x1, item_light_source x2, item_rations x2, 60 units.
+
+# ---------- WEAPONS ----------
+- id: item_knife
+  name: Knife
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 20
+  weight: 1
+  stats: {subcategory: simple_melee, damage: "1d4", damage_type: piercing, proficiency: simple, properties: [finesse, light, thrown], range: [20, 60]}
+  tags: [rarity_common, avail_shop, blade, concealable, tool_like, improvised_pick]
+  notes: "Cheap, hideable, throwable. Also usable for cutting rope, and as an improvised lockpick (very_hard DC)."
+
+- id: item_club
+  name: Club
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 1
+  weight: 2
+  stats: {subcategory: simple_melee, damage: "1d4", damage_type: bludgeoning, proficiency: simple, properties: [light]}
+  tags: [rarity_common, avail_shop, blunt, improvised_ok]
+  notes: "Baseline improvised/table-leg tier weapon."
+
+- id: item_short_blade
+  name: Short Blade
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 100
+  weight: 2
+  stats: {subcategory: martial_melee, damage: "1d6", damage_type: piercing, proficiency: martial, properties: [finesse, light]}
+  tags: [rarity_uncommon, avail_limited_stock, blade]
+  notes: "Finesse sidearm; good for DEX characters."
+
+- id: item_long_blade
+  name: Long Blade
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 150
+  weight: 3
+  stats: {subcategory: martial_melee, damage: "1d8", damage_type: slashing, proficiency: martial, properties: [versatile], versatile_damage: "1d10"}
+  tags: [rarity_uncommon, avail_limited_stock, blade]
+  notes: "Standard one-hander; two-handed for more damage."
+
+- id: item_hand_axe
+  name: Hand Axe
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 50
+  weight: 2
+  stats: {subcategory: simple_melee, damage: "1d6", damage_type: slashing, proficiency: simple, properties: [light, thrown], range: [20, 60]}
+  tags: [rarity_common, avail_shop, axe, tool_like]
+  notes: "Can also chop wood/doors (engine may grant advantage on breaking wooden objects)."
+
+- id: item_spear
+  name: Spear
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 10
+  weight: 3
+  stats: {subcategory: simple_melee, damage: "1d6", damage_type: piercing, proficiency: simple, properties: [thrown, versatile], versatile_damage: "1d8", range: [20, 60]}
+  tags: [rarity_common, avail_shop, polearm]
+  notes: "Cheap and flexible."
+
+- id: item_mace
+  name: Mace
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 50
+  weight: 4
+  stats: {subcategory: simple_melee, damage: "1d6", damage_type: bludgeoning, proficiency: simple, properties: []}
+  tags: [rarity_common, avail_shop, blunt]
+  notes: "Simple-weapon blunt option."
+
+- id: item_heavy_two_handed_blade
+  name: Heavy Two-Handed Blade
+  category: weapon
+  power_tier: 1
+  slot: two_hands
+  value: 500
+  weight: 6
+  stats: {subcategory: martial_melee, damage: "2d6", damage_type: slashing, proficiency: martial, properties: [heavy, two_handed]}
+  tags: [rarity_rare, avail_loot_only, blade, heavy]
+  notes: "Top end of tier 1; expensive. Low-STR characters should struggle (engine may impose disadvantage if STR < 13, a house rule)."
+
+- id: item_walking_staff
+  name: Walking Staff
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 2
+  weight: 4
+  stats: {subcategory: simple_melee, damage: "1d6", damage_type: bludgeoning, proficiency: simple, properties: [versatile], versatile_damage: "1d8"}
+  tags: [rarity_common, avail_shop, blunt, focus_candidate]
+  notes: "Could double as a spellcasting focus if the setting has magic."
+
+- id: item_sling
+  name: Sling
+  category: weapon
+  power_tier: 1
+  slot: main_hand
+  value: 1
+  weight: 0
+  stats: {subcategory: simple_ranged, damage: "1d4", damage_type: bludgeoning, proficiency: simple, properties: [ammunition], range: [30, 120], ammo: item_sling_stones}
+  tags: [rarity_common, avail_shop, ranged, concealable]
+  notes: "Uses stones; can use found rocks."
+
+- id: item_short_bow
+  name: Short Bow
+  category: weapon
+  power_tier: 1
+  slot: two_hands
+  value: 250
+  weight: 2
+  stats: {subcategory: simple_ranged, damage: "1d6", damage_type: piercing, proficiency: simple, properties: [ammunition, two_handed], range: [80, 320], ammo: item_arrows}
+  tags: [rarity_uncommon, avail_limited_stock, ranged]
+  notes: "Swap to 'light crossbow' style if the setting suits it better."
+
+# ---------- AMMO ----------
+- id: item_arrows
+  name: Bundle of Arrows
+  category: ammo
+  power_tier: 1
+  slot: belt
+  value: 10
+  weight: 1
+  stats: {subcategory: arrows, quantity: 20, recoverable_chance: 0.5}
+  tags: [rarity_common, avail_shop, ranged_ammo]
+  notes: "Half recoverable after a fight (engine rule suggestion)."
+
+- id: item_sling_stones
+  name: Pouch of Sling Stones
+  category: ammo
+  power_tier: 1
+  slot: belt
+  value: 1
+  weight: 1
+  stats: {subcategory: stones, quantity: 20, recoverable_chance: 0.8}
+  tags: [rarity_common, avail_shop, ranged_ammo]
+  notes: ""
+
+# ---------- ARMOR ----------
+- id: item_padded_jacket
+  name: Padded Jacket
+  category: armor
+  power_tier: 1
+  slot: body
+  value: 50
+  weight: 8
+  stats: {subcategory: light, armor_type: light, base_ac: 11, dex_cap: null, str_req: null, stealth_disadvantage: true}
+  tags: [rarity_common, avail_shop, cloth]
+  notes: "Cheapest body armor; noisy."
+
+- id: item_leather_armor
+  name: Leather Armor
+  category: armor
+  power_tier: 1
+  slot: body
+  value: 100
+  weight: 10
+  stats: {subcategory: light, armor_type: light, base_ac: 11, dex_cap: null, str_req: null, stealth_disadvantage: false}
+  tags: [rarity_common, avail_shop, leather]
+  notes: "Default for DEX characters."
+
+- id: item_hide_armor
+  name: Hide Armor
+  category: armor
+  power_tier: 1
+  slot: body
+  value: 100
+  weight: 12
+  stats: {subcategory: medium, armor_type: medium, base_ac: 12, dex_cap: 2, str_req: null, stealth_disadvantage: false}
+  tags: [rarity_common, avail_shop, leather, crude]
+  notes: "Crude medium armor."
+
+- id: item_scale_coat
+  name: Scale Coat
+  category: armor
+  power_tier: 1
+  slot: body
+  value: 500
+  weight: 45
+  stats: {subcategory: medium, armor_type: medium, base_ac: 14, dex_cap: 2, str_req: null, stealth_disadvantage: true}
+  tags: [rarity_uncommon, avail_limited_stock, metal]
+  notes: "Best tier-1 medium armor; pricey, heavy, noisy."
+
+- id: item_chain_coat
+  name: Chain Coat
+  category: armor
+  power_tier: 1
+  slot: body
+  value: 750
+  weight: 55
+  stats: {subcategory: heavy, armor_type: heavy, base_ac: 16, dex_cap: 0, str_req: 13, stealth_disadvantage: true}
+  tags: [rarity_rare, avail_loot_only, metal, heavy]
+  notes: "Ceiling of tier 1. STR < 13 = speed penalty (5e). Mostly loot/NPC gear, rarely affordable."
+
+- id: item_leather_cap
+  name: Leather Cap
+  category: armor
+  power_tier: 1
+  slot: head
+  value: 10
+  weight: 1
+  stats: {subcategory: head, armor_type: accessory, ac_bonus: 0, use_note: "house rule, not yet modelled: negates one 'stunned/dazed by blow to head' consequence per long rest"}
+  tags: [rarity_common, avail_shop, leather]
+  notes: "Slice house rule, not 5e. Gives last-ditch consequences something to interact with."
+
+- id: item_work_gloves
+  name: Work Gloves
+  category: armor
+  power_tier: 1
+  slot: hands
+  value: 5
+  weight: 0.5
+  stats: {subcategory: hands, armor_type: accessory, ac_bonus: 0, use_note: "house rule, not yet modelled: advantage on checks to handle hot/sharp/rough objects (climbing rope, thorns)"}
+  tags: [rarity_common, avail_shop, cloth, utility]
+  notes: "Slice house rule."
+
+- id: item_travel_boots
+  name: Travel Boots
+  category: armor
+  power_tier: 1
+  slot: feet
+  value: 10
+  weight: 2
+  stats: {subcategory: feet, armor_type: accessory, ac_bonus: 0}
+  tags: [rarity_common, avail_shop, leather, throwable_improvised]
+  notes: "Mostly flavor. Exists so 'take my boot off and throw it' maps to a real item (improvised 1d4 bludgeoning)."
+
+# ---------- SHIELDS ----------
+- id: item_buckler
+  name: Buckler
+  category: shield
+  power_tier: 1
+  slot: off_hand
+  value: 50
+  weight: 3
+  stats: {subcategory: light, ac_bonus: 1, proficiency: shields}
+  tags: [rarity_common, avail_shop, shield, light]
+  notes: "Not in 5e core; slice addition, compatible with light weapons in the main hand."
+
+- id: item_round_shield
+  name: Round Shield
+  category: shield
+  power_tier: 1
+  slot: off_hand
+  value: 100
+  weight: 6
+  stats: {subcategory: standard, ac_bonus: 2, proficiency: shields}
+  tags: [rarity_common, avail_shop, shield]
+  notes: "Standard 5e shield."
+
+# ---------- CONSUMABLES ----------
+- id: item_healing_draught
+  name: Minor Healing Draught
+  category: consumable
+  power_tier: 1
+  slot: belt
+  value: 500
+  weight: 0.5
+  stats: {subcategory: healing, effect: heal, amount: "2d4+2", uses: 1, action_cost: action}
+  tags: [rarity_uncommon, avail_limited_stock, healing, drinkable]
+  notes: "5e potion of healing (~7 HP, huge at level 1). SCARCE: the PC starts with 1. Shop holds at most 1 at a time at 500 (about 8x starting gold). Place at most 1-2 in the dungeon."
+
+- id: item_bandage_roll
+  name: Bandage Roll
+  category: consumable
+  power_tier: 1
+  slot: belt
+  value: 10
+  weight: 0.5
+  stats: {subcategory: healing, effect: heal, amount: "1d4", uses: 3, action_cost: out_of_combat, check: {skill: medicine, est_difficulty: easy}, also: "stabilize at 0 HP"}
+  tags: [rarity_common, avail_shop, healing, medical]
+  notes: "Cheap out-of-combat healing; rewards medicine proficiency."
+
+- id: item_antidote
+  name: Antidote Vial
+  category: consumable
+  power_tier: 1
+  slot: belt
+  value: 50
+  weight: 0.5
+  stats: {subcategory: cure, effect: cure_condition, condition: poisoned, uses: 1, action_cost: action}
+  tags: [rarity_uncommon, avail_limited_stock, cure, drinkable]
+  notes: ""
+
+- id: item_rations
+  name: Travel Rations
+  category: consumable
+  power_tier: 1
+  slot: none
+  value: 5
+  weight: 2
+  stats: {subcategory: food, effect: sustenance, uses: 1, days: 1}
+  tags: [rarity_common, avail_shop, food]
+  notes: "One day of food. Eaten on rest for a full heal (contracts v0.5); not required to rest."
+
+- id: item_bracing_tonic
+  name: Bracing Tonic
+  category: consumable
+  power_tier: 1
+  slot: belt
+  value: 75
+  weight: 0.5
+  stats: {subcategory: buff, effect: buff, condition_name: braced, condition_effect: {advantage: [str, con], disadvantage: [wis], expires_after_check: [str, con]}, buff: "advantage on STR and CON checks (and STR attacks) until the first one", duration: "10 minutes", uses: 1, side_effect: "disadvantage on WIS checks for the duration"}
+  tags: [rarity_uncommon, avail_limited_stock, drinkable]
+  notes: "Gives weak characters a costed alternative to a last-ditch effort. Condition `braced`: 10 turns, spent by the first STR/CON check or STR attack."
+
+- id: item_flash_powder
+  name: Flash Powder Packet
+  category: consumable
+  power_tier: 1
+  slot: belt
+  value: 50
+  weight: 0.5
+  stats: {subcategory: thrown_utility, effect: condition, condition: blinded, condition_name: blinded, condition_effect: {no_attack: true}, duration: "1 round", area: "10 ft", save: {ability: con, est_difficulty: medium}, uses: 1}
+  tags: [rarity_uncommon, avail_limited_stock, thrown, escape]
+  notes: "Escape tool: an NPC that fails the save is blinded for 1 turn (loses its attack; attacks against it have advantage). Every NPC it hits turns hostile. Setting may reskin it as alchemical, magical, or tech."
+
+# ---------- TOOLS ----------
+- id: item_lockpicks
+  name: Lockpick Set
+  category: tool
+  power_tier: 1
+  slot: belt
+  value: 250
+  weight: 1
+  stats: {subcategory: thieves_tools, enables: [pick_lock, disarm_trap], skill_bonus: {skill: sleight_of_hand, grants: required_for_check}, uses: null}
+  tags: [rarity_uncommon, avail_limited_stock, tool, illicit]
+  notes: "Without it, lockpicking is impossible (or improvised at very_hard)."
+
+- id: item_crowbar
+  name: Crowbar
+  category: tool
+  power_tier: 1
+  slot: belt
+  value: 20
+  weight: 5
+  stats: {subcategory: lever, enables: [force_open], skill_bonus: {skill: athletics, grants: advantage}, uses: null}
+  tags: [rarity_common, avail_shop, tool, noisy, improvised_weapon]
+  notes: "Key answer to 'weak character vs. stuck door': converts impossible into hard. Improvised weapon: 1d4 bludgeoning."
+
+- id: item_healers_kit
+  name: Healer's Kit
+  category: tool
+  power_tier: 1
+  slot: belt
+  value: 50
+  weight: 3
+  stats: {subcategory: medical, enables: [stabilize, treat_condition], skill_bonus: {skill: medicine, grants: advantage}, uses: 10}
+  tags: [rarity_uncommon, avail_limited_stock, tool, medical]
+  notes: "Can remove some last-ditch injuries with time (engine decides which)."
+
+# ---------- UTILITY ----------
+- id: item_rope
+  name: Hempen Rope
+  category: utility
+  power_tier: 1
+  slot: none
+  value: 10
+  weight: 10
+  stats: {subcategory: climbing, length_ft: 50, use_note: "enables climbing/descending; advantage on athletics climb checks when anchored (not yet modelled)"}
+  tags: [rarity_common, avail_shop, utility, climbing]
+  notes: ""
+
+- id: item_light_source
+  name: Light Source
+  category: utility
+  power_tier: 1
+  slot: off_hand
+  value: 5
+  weight: 1
+  stats: {subcategory: light, effect: light, bright_radius_ft: 20, dim_radius_ft: 20, duration: "1 hour", uses: 1, improvised_damage: "1 fire"}
+  tags: [rarity_common, avail_shop, utility, light, fire]
+  notes: "Torch or lantern depending on setting. Darkness in the dungeon should matter."
+
+- id: item_signal_whistle
+  name: Signal Whistle
+  category: utility
+  power_tier: 1
+  slot: belt
+  value: 1
+  weight: 0
+  stats: {subcategory: signal, use_note: "loud noise audible ~600 ft; can distract or summon (not yet modelled)", uses: null}
+  tags: [rarity_common, avail_shop, utility, noisy]
+  notes: "Distraction tool; the engine applies noise_made consequences."

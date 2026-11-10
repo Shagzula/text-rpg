@@ -5,7 +5,7 @@ import json
 import pytest
 
 from rpg import db, personas, world as demo, yamlish
-from test_content import GATEKEEPER_YAML, ITEMS_YAML, needs_gatekeeper, needs_items
+from test_content import GATEKEEPER_YAML, ITEMS_YAML
 
 MARA = personas.DEMO_PERSONA_DIR / "npc_mara.yaml"
 GUARD = personas.DEMO_PERSONA_DIR / "npc_dozing_guard.yaml"
@@ -31,8 +31,6 @@ def test_demo_personas_validate(conn, path):
     assert not any(ch.isdigit() for t in texts + [p["insight_tell"]] for ch in t)  # narration stays digit-free
 
 
-@needs_gatekeeper
-@needs_items
 def test_designer_gatekeeper_example_validates():
     keys = [t["id"] for t in yamlish.load(ITEMS_YAML)]
     p = personas.load_file(GATEKEEPER_YAML, keys)

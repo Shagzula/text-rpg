@@ -9,11 +9,11 @@ from rpg import db, effects, yamlish
 from rpg import inventory as inv
 from test_actions import Script, act, run, world  # noqa: F401  (fixture)
 
-CONTENT = Path(__file__).resolve().parents[2] / "content"
+# Vendored copy of the Story Designer's content (code/content/), so a clean worktree runs every test.
+# tests/test_vendored_content.py flags drift from /home/box/rpg-project/content.
+CONTENT = Path(__file__).resolve().parents[1] / "content"
 ITEMS_YAML = CONTENT / "items_tier1.yaml"
 GATEKEEPER_YAML = CONTENT / "npcs" / "npc_example_gatekeeper.yaml"
-needs_items = pytest.mark.skipif(not ITEMS_YAML.exists(), reason="content/items_tier1.yaml not present")
-needs_gatekeeper = pytest.mark.skipif(not GATEKEEPER_YAML.exists(), reason="gatekeeper example not present")
 
 
 # --- yamlish --------------------------------------------------------------------------------------
@@ -48,7 +48,6 @@ def test_yamlish_rejects_bad_indentation():
         yamlish.loads("a:\n  b: 1\n c: 2\n")
 
 
-@needs_items
 def test_items_tier1_loads_into_templates(world):
     items = yamlish.load(ITEMS_YAML)
     assert isinstance(items, list) and len(items) >= 30
@@ -60,7 +59,6 @@ def test_items_tier1_loads_into_templates(world):
     assert all(not any(ch.isdigit() for ch in t["name"]) for t in items)
 
 
-@needs_gatekeeper
 def test_gatekeeper_example_parses():
     p = yamlish.load(GATEKEEPER_YAML)
     assert p["key"] == "npc_example_gatekeeper" and "knowledge" in p and "reveal_by_band" in p
@@ -78,7 +76,6 @@ def _replace_template(conn, tpl):
                  (json.dumps(stats), json.dumps(tpl.get("tags") or []), tpl["id"]))
 
 
-@needs_items
 def test_flash_powder_from_yaml_stops_the_npc_attack(world):
     conn = world["conn"]
     tpl = _yaml_template("item_flash_powder")
@@ -91,7 +88,6 @@ def test_flash_powder_from_yaml_stops_the_npc_attack(world):
     assert r["expired"] == []  # "1 round" survives into the player's next action (BUG-R01)
 
 
-@needs_items
 def test_knife_from_yaml_is_an_improvised_pick_by_tag(world, caplog):
     conn = world["conn"]
     tpl = _yaml_template("item_knife")
