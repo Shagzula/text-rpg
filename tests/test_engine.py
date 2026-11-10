@@ -65,3 +65,11 @@ def test_demo_runs(tmp_path, capsys):
     rpg_engine.demo(db_path=tmp_path / "d.db", seed=7)
     out = capsys.readouterr().out
     assert "Easy climb" in out and "Last-ditch door" in out
+
+
+def test_demo_reuses_character(tmp_path, capsys):
+    p = tmp_path / "d.db"
+    rpg_engine.demo(db_path=p, seed=1)
+    rpg_engine.demo(db_path=p, seed=2)
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1

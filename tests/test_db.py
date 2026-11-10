@@ -7,7 +7,7 @@ from rpg import db, rules
 
 EXPECTED_TABLES = {"schema_meta", "factions", "locations", "location_exits", "characters",
                    "character_skills", "character_conditions", "item_templates", "items",
-                   "npcs", "relationships", "world_flags", "save_games"}
+                   "npcs", "relationships", "world_flags", "save_games", "narration_log"}
 
 
 @pytest.fixture
@@ -19,13 +19,13 @@ def test_schema_created_with_version(path):
     with db.connect(path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert EXPECTED_TABLES <= tables
-        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "1"
+        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "2"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     db.init_db(path)  # idempotent
 
 
 SHORT_BLADE = {  # content shape from items_tier1.yaml
-    "id": "wpn_short_blade", "name": "Short Blade", "category": "weapon",
+    "id": "item_short_blade", "name": "Short Blade", "category": "weapon",
     "subcategory": "simple_melee", "power_tier": 1, "slot": "main_hand", "value": 10, "weight": 2,
     "stats": {"damage": "1d6", "damage_type": "piercing", "properties": ["finesse", "light"]},
     "tags": ["blade", "concealable"], "notes": "Default finesse sidearm.",
@@ -44,8 +44,8 @@ def test_insert_and_read_world(path):
         db.add_item_template(conn, SHORT_BLADE)
         cid = db.create_character(conn, "Hero", level=2, scores={"str": 8, "dex": 15}, max_hp=12,
                                   location_id=town, skills={"stealth": "expertise", "perception": "proficient"})
-        db.add_item(conn, "wpn_short_blade", character_id=cid, equipped=True, display_name="Rusty blade")
-        db.add_item(conn, "wpn_short_blade", location_id=cave, key="item_cave_blade")
+        db.add_item(conn, "item_short_blade", character_id=cid, equipped=True, display_name="Rusty blade")
+        db.add_item(conn, "item_short_blade", location_id=cave, key="item_cave_blade")
         conn.execute("INSERT INTO world_flags (key, value) VALUES ('quest_started', 'true')")
         conn.execute("INSERT INTO save_games (name, character_id) VALUES ('slot1', ?)", (cid,))
 
@@ -59,7 +59,7 @@ def test_insert_and_read_world(path):
         assert len(inv) == 1
         inv = inv[0]
         assert inv["display_name"] == "Rusty blade" and inv["equipped"] == 1 and inv["key"].startswith("item_")
-        assert (inv["tkey"], inv["slot"], inv["weight"], inv["value"]) == ("wpn_short_blade", "main_hand", 2, 10)
+        assert (inv["tkey"], inv["slot"], inv["weight"], inv["value"]) == ("item_short_blade", "main_hand", 2, 10)
         stats = json.loads(inv["stats"])
         assert stats["damage"] == "1d6" and stats["subcategory"] == "simple_melee"
         assert inv["description"] == "Default finesse sidearm."
@@ -95,7 +95,7 @@ def test_item_needs_exactly_one_owner(path):
     for kw in ({}, {"character_id": cid, "location_id": loc}):
         with pytest.raises(sqlite3.IntegrityError):
             with db.connect(path) as conn:
-                db.add_item(conn, "wpn_short_blade", **kw)
+                db.add_item(conn, "item_short_blade", **kw)
 
 
 def test_check_constraints(path):
@@ -134,3 +134,25 @@ def test_default_db_path_independent_of_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = db.default_db_path()
     assert p.is_absolute() and p == db.PROJECT_ROOT / "saves" / "rpg_state.db"
+
+
+def test_instance_keys_follow_template_slug(path):
+    with db.connect(path) as conn:
+        db.add_item_template(conn, SHORT_BLADE)
+        cid = db.create_character(conn, "Hero", key="pc_hero")
+        keys = [conn.execute("SELECT key FROM items WHERE id = ?",
+                             (db.add_item(conn, "item_short_blade", character_id=cid),)).fetchone()[0]
+                for _ in range(3)]
+        assert keys == ["item_short_blade", "item_short_blade_2", "item_short_blade_3"]
+        assert db.character_id_by_key(conn, "pc_hero") == cid
+        assert db.character_id_by_key(conn, "nobody") is None
+
+
+def test_subcategory_accepted_inside_or_outside_stats(path):
+    with db.connect(path) as conn:
+        db.add_item_template(conn, {"id": "item_a", "name": "A", "category": "tool",
+                                    "stats": {"subcategory": "lever"}})
+        db.add_item_template(conn, {"id": "item_b", "name": "B", "category": "tool", "subcategory": "lever"})
+        for k in ("item_a", "item_b"):
+            stats = json.loads(conn.execute("SELECT stats FROM item_templates WHERE key=?", (k,)).fetchone()[0])
+            assert stats == {"subcategory": "lever"}

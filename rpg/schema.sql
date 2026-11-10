@@ -1,11 +1,12 @@
--- Text RPG engine schema (v1). All authoritative game state lives here.
+-- Text RPG engine schema (v2). All authoritative game state lives here.
 -- Extends the starter rpg_engine.py schema: same table/column names where they
 -- existed, plus FKs, CHECKs, JSON columns and the tables the design doc needs.
 -- JSON columns are TEXT validated with json_valid(). Foreign keys are enforced
 -- (PRAGMA foreign_keys=ON is set on every connection by rpg.db).
 -- Content tables (factions, locations, npcs, item_templates, items) have an
 -- INTEGER primary key plus a unique TEXT `key` slug. Content files and LLM
--- contracts refer to entities by `key` (e.g. 'wpn_short_blade', 'npc_mara').
+-- contracts refer to entities by `key` (e.g. 'item_short_blade', 'npc_mara').
+-- Exits are addressed by their destination location key.
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS location_exits (
 
 CREATE TABLE IF NOT EXISTS characters (
     id          INTEGER PRIMARY KEY,
+    key         TEXT UNIQUE,                   -- optional slug, e.g. 'pc_test_rogue'
     name        TEXT NOT NULL,
     is_player   INTEGER NOT NULL DEFAULT 1 CHECK (is_player IN (0, 1)),
     level       INTEGER NOT NULL DEFAULT 1  CHECK (level BETWEEN 1 AND 20),
@@ -55,6 +57,8 @@ CREATE TABLE IF NOT EXISTS characters (
     max_hp      INTEGER NOT NULL CHECK (max_hp > 0),
     current_hp  INTEGER NOT NULL,
     location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    -- weapon proficiency categories ('simple', 'martial') and/or template keys
+    weapon_proficiencies TEXT NOT NULL DEFAULT '["simple"]' CHECK (json_valid(weapon_proficiencies)),
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -88,7 +92,7 @@ CREATE TABLE IF NOT EXISTS character_conditions (
 -- (YAML `id`). subcategory and other category-specific data go in stats JSON.
 CREATE TABLE IF NOT EXISTS item_templates (
     id          INTEGER PRIMARY KEY,
-    key         TEXT NOT NULL UNIQUE,           -- 'wpn_short_blade'
+    key         TEXT NOT NULL UNIQUE,           -- 'item_short_blade'
     name        TEXT NOT NULL,
     category    TEXT NOT NULL CHECK (category IN
                   ('weapon', 'armor', 'shield', 'ammo', 'consumable', 'tool', 'utility', 'misc')),
@@ -106,13 +110,16 @@ CREATE TABLE IF NOT EXISTS item_templates (
 -- (lying in the scene, can be taken).
 CREATE TABLE IF NOT EXISTS items (
     id           INTEGER PRIMARY KEY,
-    key          TEXT NOT NULL UNIQUE,          -- 'item_0003' / 'wpn_short_blade_1'
+    key          TEXT NOT NULL UNIQUE,          -- 'item_short_blade', then 'item_short_blade_2', ...
     template_id  INTEGER NOT NULL REFERENCES item_templates(id),
     character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
     location_id  INTEGER REFERENCES locations(id) ON DELETE CASCADE,
     display_name TEXT,                          -- custom name, e.g. "Grandpa's rusty shovel"
     quantity     INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
     equipped     INTEGER NOT NULL DEFAULT 0 CHECK (equipped IN (0, 1)),
+    uses_left    INTEGER,                       -- NULL = full (template stats.uses)
+    state        TEXT,                          -- free-form entity state: 'sealed', 'open', 'struck'
+    out_of_reach INTEGER NOT NULL DEFAULT 0 CHECK (out_of_reach IN (0, 1)),
     notes        TEXT,
     acquired_at  TEXT DEFAULT CURRENT_TIMESTAMP,
     CHECK ((character_id IS NULL) != (location_id IS NULL)),
@@ -132,6 +139,10 @@ CREATE TABLE IF NOT EXISTS npcs (
     faction_id  INTEGER REFERENCES factions(id) ON DELETE SET NULL,
     traits      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(traits)),
     disposition INTEGER NOT NULL DEFAULT 0 CHECK (disposition BETWEEN -100 AND 100),
+    defense_dc  INTEGER NOT NULL DEFAULT 10,    -- attack DC (AC-like)
+    max_hp      INTEGER NOT NULL DEFAULT 4 CHECK (max_hp > 0),
+    current_hp  INTEGER,                        -- NULL = max_hp
+    out_of_reach INTEGER NOT NULL DEFAULT 0 CHECK (out_of_reach IN (0, 1)),
     is_major    INTEGER NOT NULL DEFAULT 0 CHECK (is_major IN (0, 1)),
     alive       INTEGER NOT NULL DEFAULT 1 CHECK (alive IN (0, 1)),
     notes       TEXT
@@ -162,6 +173,15 @@ CREATE TABLE IF NOT EXISTS save_games (
     turn         INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Narrator output per turn, for the {recent_narrations} context block.
+CREATE TABLE IF NOT EXISTS narration_log (
+    id           INTEGER PRIMARY KEY,
+    character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+    turn         INTEGER NOT NULL,
+    text         TEXT NOT NULL,
+    created_at   TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_character     ON items(character_id);

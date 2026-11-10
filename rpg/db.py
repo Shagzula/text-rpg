@@ -11,7 +11,7 @@ from typing import Dict, Iterator, Optional, Union
 
 from .rules import ABILITIES, Character, CheckResult, Condition, normalize_skill
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PathLike = Union[str, os.PathLike]
@@ -81,17 +81,25 @@ def init_db(path: Optional[PathLike] = None) -> Path:
 
 def create_character(conn, name: str, *, level: int = 1, scores: Optional[Dict[str, int]] = None,
                      skills: Optional[Dict[str, str]] = None, max_hp: int = 10,
-                     location_id: Optional[int] = None, is_player: bool = True) -> int:
+                     location_id: Optional[int] = None, is_player: bool = True,
+                     key: Optional[str] = None, weapon_proficiencies=("simple",)) -> int:
     scores = {**{a: 10 for a in ABILITIES}, **(scores or {})}
     cur = conn.execute(
-        f"""INSERT INTO characters (name, is_player, level, {', '.join(a + '_score' for a in ABILITIES)},
-            max_hp, current_hp, location_id) VALUES (?, ?, ?, {', '.join('?' * len(ABILITIES))}, ?, ?, ?)""",
-        (name, int(is_player), level, *[scores[a] for a in ABILITIES], max_hp, max_hp, location_id),
+        f"""INSERT INTO characters (key, name, is_player, level, {', '.join(a + '_score' for a in ABILITIES)},
+            max_hp, current_hp, location_id, weapon_proficiencies)
+            VALUES (?, ?, ?, ?, {', '.join('?' * len(ABILITIES))}, ?, ?, ?, ?)""",
+        (key, name, int(is_player), level, *[scores[a] for a in ABILITIES], max_hp, max_hp, location_id,
+         json.dumps(list(weapon_proficiencies))),
     )
     cid = cur.lastrowid
     for skill, prof in (skills or {}).items():
         set_skill(conn, cid, skill, prof)
     return cid
+
+
+def character_id_by_key(conn, key: str) -> Optional[int]:
+    row = conn.execute("SELECT id FROM characters WHERE key = ?", (key,)).fetchone()
+    return row["id"] if row else None
 
 
 def set_skill(conn, character_id: int, skill: str, proficiency: str) -> None:
@@ -168,6 +176,19 @@ def add_item_template(conn, tpl: Dict) -> int:
     return cur.lastrowid
 
 
+def next_item_key(conn, base: str) -> str:
+    """'item_short_blade' if free, else 'item_short_blade_2', '_3', ..."""
+    prefix = base + "_"
+    taken = {r[0] for r in conn.execute("SELECT key FROM items WHERE key = ? OR substr(key, 1, ?) = ?",
+                                        (base, len(prefix), prefix))}
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}_{n}" in taken:
+        n += 1
+    return f"{base}_{n}"
+
+
 def add_item(conn, template_key: str, *, character_id: Optional[int] = None,
              location_id: Optional[int] = None, quantity: int = 1, equipped: bool = False,
              display_name: Optional[str] = None, key: Optional[str] = None) -> int:
@@ -176,8 +197,7 @@ def add_item(conn, template_key: str, *, character_id: Optional[int] = None,
     if row is None:
         raise ValueError(f"Unknown item template {template_key!r}")
     if key is None:
-        n = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM items").fetchone()[0]
-        key = f"item_{n:04d}"
+        key = next_item_key(conn, template_key)
     cur = conn.execute(
         """INSERT INTO items (key, template_id, character_id, location_id, display_name, quantity, equipped)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",

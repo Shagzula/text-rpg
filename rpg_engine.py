@@ -109,9 +109,10 @@ def demo(db_path=None, seed: Optional[int] = None):
     roller = lambda: rng.randint(1, 20)
     with connect(path) as conn:
         # Create a sample rogue (STR 10, DEX 16, level 3: PB +2)
-        char_id = db.create_character(
-            conn, "Test Rogue", level=3, scores={"str": 10, "dex": 16}, max_hp=24,
-            skills={"acrobatics": "proficient", "athletics": "proficient"},
+        # Reuse the demo rogue across runs (looked up by key).
+        char_id = db.character_id_by_key(conn, "pc_test_rogue") or db.create_character(
+            conn, "Test Rogue", key="pc_test_rogue", level=3, scores={"str": 10, "dex": 16},
+            max_hp=24, skills={"acrobatics": "proficient", "athletics": "proficient"},
         )
 
     print(f"Save file: {path}")
