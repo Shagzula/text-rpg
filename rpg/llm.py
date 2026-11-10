@@ -203,6 +203,8 @@ class MockLLM:
             known = {k for k, _ in self._candidates(context, ("exit", "item"))}
             if not amb and key not in known and len(locked) == 1:  # "pick the lock"
                 key = next(iter(locked))
+                rest = next(e.get("description") or e["to_name"] for e in context["location"]["exits"]
+                            if e["to"] == key)
             self._apply_target(action, key, amb, rest or "door", refs)
             skill = "sleight_of_hand" if verb == "pick" else "athletics"
             action.update(action_type="skill_check", skill=skill,
