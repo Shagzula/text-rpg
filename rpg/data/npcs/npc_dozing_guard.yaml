@@ -1,0 +1,65 @@
+# Demo persona (engine-owned demo content, modelled on content/npcs/npc_example_gatekeeper.yaml).
+key: npc_dozing_guard
+name: Dozing Guard
+description: "A guard asleep on a stool, keys at his belt."
+
+voice:
+  style: "Slurred and slow, mid-yawn. Grumbles, trails off, repeats himself when flustered."
+  sample_phrases:
+    - "Mm? Who's there? Nobody's there."
+    - "I'm awake. I'm awake."
+    - "Not my job, friend. Not my job."
+
+traits: [drowsy, lazy, easily_flustered]
+goals:
+  - "Get through the night without anyone noticing he slept."
+  - "Keep folk out of the cellar, as he was told."
+
+base_disposition: 0
+
+combat:              # balance numbers unchanged from v0.4 (world.GUARD); persona is now the source
+  defense_dc: 11
+  max_hp: 12
+  attack_bonus: 3
+  damage: "1d6"
+  save_bonus: 1
+
+social:
+  base_dc: 12
+  persuasion: 0
+  deception: -2
+  intimidation: -2
+  insight: 0
+
+insight_tell: "Even half asleep, he keeps one boot planted toward the cellar door. Someone told him to guard it, and he is afraid of them."
+
+knowledge:
+  guard_post:
+    label: "his post / why he is here"
+    text: "He is paid to keep folk out of the cellar, and to stay awake while he does it."
+  the_cellar_door:
+    label: "the cellar door"
+    text: "The cellar door sticks. It takes a strong shoulder or a good set of picks."
+
+secrets:
+  the_lever:
+    label: "what is down in the cellar"
+    text: "Down in the cellar there is an old lever. Pull it and something under the square clunks open."
+    min_band: friendly
+  who_pays:
+    label: "who pays him"
+    text: "The merchant still pays him in stolen coin."
+    min_band: never
+
+reveal_by_band:
+  hostile:    {topics: [], trades: []}
+  unfriendly: {topics: [guard_post], trades: []}
+  neutral:    {topics: [the_cellar_door], trades: []}
+  friendly:   {topics: [the_lever], trades: [trade_buy_flash_powder]}
+  allied:     {topics: [], trades: []}
+
+trades:
+  trade_buy_flash_powder:
+    label: "a packet of flash powder from the guard stores"
+    gives: [{item: item_flash_powder, qty: 1}]
+    wants: [{gold: 30}]

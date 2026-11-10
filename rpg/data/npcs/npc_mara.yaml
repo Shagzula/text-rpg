@@ -1,0 +1,94 @@
+# Demo persona (engine-owned demo content, modelled on content/npcs/npc_example_gatekeeper.yaml).
+# Schema: content/npc_persona_schema.md, plus the engine's coin extension ({gold: N} in gives/wants).
+key: npc_mara
+name: Mara
+description: "A gruff stallholder packing up for the night."
+
+voice:
+  style: "Blunt market trader. Short, dry sentences. Calls everyone 'love' and haggles out of habit."
+  sample_phrases:
+    - "Buying or wasting my time, love?"
+    - "Everything has a price. Most things have two."
+    - "Don't touch what you can't pay for."
+
+traits: [gruff, observant, thrifty]
+goals:
+  - "Sell off the last of the day's stock before the square empties."
+  - "Keep out of the old merchant's business."
+
+base_disposition: 20
+
+combat:
+  defense_dc: 10
+  max_hp: 6
+  attack_bonus: 2
+  damage: "1d4"
+  save_bonus: 0
+
+social:
+  base_dc: 12
+  persuasion: 0
+  deception: 3
+  intimidation: 3
+  insight: 0
+
+insight_tell: "Her eyes flick to the storeroom door whenever the cellar comes up. She knows more than she says."
+
+knowledge:
+  mara_self:
+    label: "Mara herself / her stall"
+    text: "She has kept a stall on this square since she was a girl and sells whatever travellers need."
+  the_storeroom:
+    label: "the storeroom to the east"
+    text: "The storeroom belongs to the old wine merchant. His guard dozes in there most nights."
+  market_news:
+    label: "news from the market"
+    text: "Trade is slow since the merchant shut his cellar. Rope and lamp oil still sell."
+  the_cellar:
+    label: "the cellar under the storeroom"
+    text: "Nobody has been down in the cellar since the merchant left. The door is iron-banded and locked, and it is pitch dark below."
+
+secrets:
+  guard_sleeps:
+    label: "the guard's habits"
+    text: "The dozing guard sleeps like a stone. A quiet hand can work the cellar lock right under his nose."
+    min_band: friendly
+  cellar_lever:
+    label: "what is hidden in the cellar"
+    text: "There is an old lever in the cellar wall. Folk say it opens a gate somewhere beneath the square."
+    min_band: allied
+  mara_past:
+    label: "Mara's dealings with the merchant"
+    text: "She used to fence stolen goods for the merchant."
+    min_band: never
+
+reveal_by_band:
+  hostile:    {topics: [], trades: []}
+  unfriendly: {topics: [mara_self], trades: []}
+  neutral:    {topics: [the_storeroom, market_news], trades: [trade_buy_rations, trade_buy_torch, trade_sell_rope]}
+  friendly:   {topics: [the_cellar, guard_sleeps], trades: [trade_buy_tonic]}
+  allied:     {topics: [cellar_lever], trades: [trade_tonic_for_rope]}
+
+trades:
+  trade_buy_rations:
+    label: "a day's travel rations"
+    gives: [{item: item_rations, qty: 1}]
+    wants: [{gold: 5}]
+    repeatable: true
+  trade_buy_torch:
+    label: "a torch"
+    gives: [{item: item_light_source, qty: 1}]
+    wants: [{gold: 5}]
+    repeatable: true
+  trade_sell_rope:
+    label: "buying a coil of rope from you"
+    gives: [{gold: 8}]
+    wants: [{item: item_rope, qty: 1}]
+  trade_buy_tonic:
+    label: "a bracing tonic from under the counter"
+    gives: [{item: item_bracing_tonic, qty: 1}]
+    wants: [{gold: 75}]
+  trade_tonic_for_rope:
+    label: "a tonic in exchange for rope"
+    gives: [{item: item_bracing_tonic, qty: 1}]
+    wants: [{item: item_rope, qty: 1}]

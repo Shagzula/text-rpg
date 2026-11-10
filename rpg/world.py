@@ -2,10 +2,11 @@
 Setting-neutral placeholder content until Dan picks a setting."""
 from __future__ import annotations
 
-from . import db
+from . import db, personas
 
 PLAYER_KEY = "pc_player"
 # Guard numbers (playtest: combat was trivial at 4 HP / DC 8 and no counterattacks).
+DEMO_GOLD = 60  # content README: a 60-unit purse (coins, same unit as item_templates.value)
 GUARD = {"defense_dc": 11, "max_hp": 12, "attack_bonus": 3, "damage": "1d6", "save_bonus": 1}
 
 TEMPLATES = [
@@ -110,5 +111,7 @@ def seed_demo_slice(conn) -> int:
     db.add_item(conn, "item_flash_powder", location_id=store)
     db.add_item(conn, "item_rusty_lever", location_id=cellar)
     db.add_item(conn, "item_rope", location_id=cellar)
+    conn.execute("UPDATE characters SET gold = ? WHERE id = ?", (DEMO_GOLD, cid))
+    personas.install_dir(conn)  # rpg/data/npcs/*.yaml -> npc_personas (+ combat, disposition)
     conn.execute("INSERT INTO save_games (name, character_id, turn) VALUES ('autosave', ?, 0)", (cid,))
     return cid
