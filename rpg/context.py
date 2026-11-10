@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List
 
-from . import db, rules
+from . import db, effects, rules
 from .inventory import list_inventory, list_location_items
 
 RECENT_NARRATIONS = 3
@@ -52,10 +52,21 @@ def player_sheet(conn, character_id: int) -> Dict:
         "abilities": {a: {"score": s, "mod": rules.ability_modifier(s)} for a, s in char.scores.items()},
         "skills": dict(sorted(char.skills.items())),
         "weapon_proficiencies": json.loads(row["weapon_proficiencies"]),
-        "conditions": [{"name": c.name, "description": c.description, "lasting": c.lasting}
-                       for c in char.conditions],
+        "conditions": _conditions(conn, character_id),
         "features": [],  # no spells/features in the slice
     }
+
+
+DARK_DESCRIPTION = "It is pitch dark; you can see nothing."
+
+
+def _conditions(conn, character_id) -> List[Dict]:
+    """name/description/lasting, plus `timed` (it will wear off by itself; turns left are
+    engine-only)."""
+    return [{"name": r["name"], "description": r["description"], "lasting": bool(r["lasting"]),
+             "timed": r["duration_turns"] is not None}
+            for r in conn.execute("SELECT * FROM character_conditions WHERE character_id = ? ORDER BY id",
+                                  (character_id,))]
 
 
 def build_context(conn, character_id: int) -> Dict:
@@ -66,8 +77,10 @@ def build_context(conn, character_id: int) -> Dict:
     location = None
     npcs, items = [], []
     if loc is not None:
+        lit = effects.location_is_lit(conn, loc["id"], character_id)
         location = {"key": loc["key"], "name": loc["name"],
-                    "description": short_description(loc["description"]),
+                    "description": short_description(loc["description"]) if lit else DARK_DESCRIPTION,
+                    "dark": bool(loc["dark"]), "lit": lit,
                     "exits": location_exits(conn, loc["id"])}
         for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? ORDER BY id", (loc["id"],)):
             npcs.append({"key": n["key"], "name": n["name"],
@@ -75,8 +88,10 @@ def build_context(conn, character_id: int) -> Dict:
                          "traits": json.loads(n["traits"]),
                          "status": "alive" if n["alive"] else "defeated",
                          "hp_band": rules.hp_band(npc_hp(n), n["max_hp"]),
-                         "out_of_reach": bool(n["out_of_reach"])})
-        items = [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
+                         "out_of_reach": bool(n["out_of_reach"]),
+                         "conditions": effects.npc_conditions(conn, n["id"]),
+                         "visible": lit})
+        items = [] if not lit else [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
                   "state": i["state"], "out_of_reach": i["out_of_reach"]}
                  for i in list_location_items(conn, loc["id"])]
     sheet = player_sheet(conn, character_id)
@@ -85,7 +100,7 @@ def build_context(conn, character_id: int) -> Dict:
         "npcs_present": npcs,
         "visible_items": items,
         "player_inventory": [{"key": i["key"], "name": i["name"], "equipped": i["equipped"],
-                              "slot": i["slot"], "quantity": i["quantity"]}
+                              "slot": i["slot"], "quantity": i["quantity"], "state": i["state"]}
                              for i in list_inventory(conn, character_id)],
         "player_sheet": sheet,
         "active_conditions": sheet["conditions"],

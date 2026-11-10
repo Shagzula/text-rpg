@@ -50,7 +50,8 @@ def test_player_sheet(world):
     assert sheet["abilities"]["dex"] == {"score": 14, "mod": 2}
     assert sheet["skills"] == {"perception": "proficient", "sleight_of_hand": "proficient", "stealth": "expertise"}
     assert sheet["proficiency_bonus"] == 2 and sheet["weapon_proficiencies"] == ["simple"]
-    assert sheet["conditions"] == [{"name": "injured_str", "description": "Hurt yourself", "lasting": True}]
+    assert sheet["conditions"] == [{"name": "injured_str", "description": "Hurt yourself", "lasting": True,
+                                   "timed": False}]
     assert ctx["active_conditions"] == sheet["conditions"]
 
 
@@ -77,3 +78,30 @@ def test_context_without_location(tmp_path):
     cid = db.create_character(conn, "Lost")
     ctx = context.build_context(conn, cid)
     assert ctx["location"] is None and ctx["npcs_present"] == [] and ctx["visible_items"] == []
+
+
+def test_dark_location_hides_scene_until_lit(world):
+    conn, w = world
+    conn.execute("UPDATE locations SET dark = 1 WHERE id = ?", (w["store"],))
+    ctx = context.build_context(conn, w["cid"])
+    loc = ctx["location"]
+    assert loc["dark"] is True and loc["lit"] is False
+    assert loc["description"] == context.DARK_DESCRIPTION and ctx["visible_items"] == []
+    assert ctx["npcs_present"] and all(n["visible"] is False for n in ctx["npcs_present"])
+    assert loc["exits"]  # you still know the way out
+    tid = conn.execute("SELECT id FROM item_templates WHERE key = 'item_hanging_lamp'").fetchone()[0]
+    conn.execute("UPDATE items SET state = 'lit' WHERE template_id = ?", (tid,))
+    ctx = context.build_context(conn, w["cid"])
+    assert ctx["location"]["lit"] is True and ctx["visible_items"]
+
+
+def test_context_shows_npc_conditions_and_timed_player_conditions(world):
+    conn, w = world
+    nid = conn.execute("SELECT id FROM npcs ORDER BY id LIMIT 1").fetchone()[0]
+    conn.execute("INSERT INTO npc_conditions (npc_id, name, duration_turns) VALUES (?, 'blinded', 1)", (nid,))
+    conn.execute("INSERT INTO character_conditions (character_id, name, duration_turns) VALUES (?, 'braced', 5)",
+                 (w["cid"],))
+    ctx = context.build_context(conn, w["cid"])
+    assert ctx["npcs_present"][0]["conditions"] == ["blinded"]
+    assert {"name": "braced", "description": None, "lasting": False, "timed": True} in ctx["active_conditions"]
+    assert "duration_turns" not in str(ctx)
