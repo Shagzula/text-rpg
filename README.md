@@ -1,16 +1,20 @@
-# Text RPG engine (M1)
+# Text RPG engine (M1.5: talk and gold)
 
 Hybrid text RPG: an LLM interprets free-form player actions and narrates; this Python +
 SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `docs/contracts.md`.
 
 ## Layout
 - `rpg_engine.py` - Dan's starter, now a thin API + demo on top of `rpg/`
-- `rpg/schema.sql` - SQLite schema (v3; v2 saves migrate on open; foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
+- `rpg/schema.sql` - SQLite schema (v4; v2/v3 saves migrate on open; foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
 - `rpg/db.py` - `init_db(path)`, connections, character/condition load+save
 - `rpg/rules.py` - pure 5e math, `resolve_skill_check()`, `resolve_attack()`, dice, HP/disposition bands
 - `rpg/inventory.py` - item helpers by key: add/remove/transfer/list/has, equip/unequip with slot conflicts
 - `rpg/actions.py` - `process_action_proposal(conn, character_id, proposal, rng=None)`: proposal -> narrator result
 - `rpg/effects.py` - NPC counterattacks, player defense, light/darkness, tools, item conditions, timers
+- `rpg/talk.py` - talk resolution (social DCs, disposition, topics, trades/coins) and the `voice_npc` step
+- `rpg/personas.py` - NPC persona load/validation (`npc_persona_schema.md`), band helpers, prompt-safe views
+- `rpg/yamlish.py` - stdlib YAML-subset parser for content files (personas, `items_tier1.yaml`)
+- `rpg/data/npcs/` - demo personas (Mara, the dozing guard)
 - `rpg/context.py` - `build_context(conn, character_id)`: the prompt context block; narration log
 - `rpg/llm.py` - `LLMClient` protocol, `MockLLM`, narration post-processing, provider factory (`RPG_LLM`)
 - `rpg/world.py` - built-in demo slice
@@ -29,6 +33,9 @@ python3 rpg_engine.py play ...  # same CLI via Dan's starter file
 Type plain actions: `look`, `go east`, `take crowbar`, `pick the lock`, `use crowbar on door`,
 `desperately kick the door`, `light torch`, `down` / `d`, `up` / `u`, `back`, `pull lever`, `attack guard`,
 `throw flash powder at guard`, `drink tonic`, `drink healing draught`, `i`, `rest`, `wait`.
+Talk: `talk to mara`, `ask mara about the cellar`, `persuade mara about ...`, `lie to the guard about ...`,
+`threaten the guard`, `read mara` (insight), `hello mara`, `goodbye mara`, `trade with mara`,
+`buy a torch from mara`, `sell rope to mara`. Bare `talk` talks to the only person here (or asks which).
 Directions: `north`...`southwest`, `up`, `down`, `in`, `out`, and `n s e w ne nw se sw u d`, alone or after
 `go`/`walk`/`head`/`climb`. Input over 300 characters is refused without spending a turn.
 Anything the engine can't model ("cast fireball", "xyzzy") is answered "Nothing happens" and costs no turn.
@@ -37,8 +44,14 @@ Meta commands: `/save [name]`, `/load [name]`, `/saves`, `/stats`, `/debug` (sho
 
 Demo slice: Town Square (Mara, a crowbar, a bracing tonic) -> east -> Storeroom (dozing guard, hanging
 lamp, flash powder, locked iron-banded door, DC 15) -> down -> Cellar (**dark**: light your torch first;
-rope, a lever that sets a flag). You start with a shortsword, boots, a healing draught, lockpicks, a torch
-and rations.
+rope, a lever that sets a flag). You start with a shortsword, boots, a healing draught, lockpicks, a torch,
+rations and a purse of 60 coins (`/stats` shows it).
+
+**Talk** (contracts v0.5 §d): NPCs with a persona (`rpg/data/npcs/*.yaml`) have topics they'll share at
+their current disposition band, secrets they share only when they like you enough (or never), and trades
+priced in coins by band. Persuading, lying and intimidating roll against the persona's social DC and move
+disposition; the engine decides what may be said, and a separate `voice_npc` LLM call only phrases it
+(the mock has a deterministic voice). If the voice call fails, the narrator reports the facts indirectly.
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
@@ -101,7 +114,7 @@ python3 rpg_engine.py [db_path] [seed]                   # engine JSON demo (thr
   Timed conditions and lit lights tick down each turn that spends time.
 
 ## Turn API
-See `docs/contracts.md` (v0.4) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.5) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db

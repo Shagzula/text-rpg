@@ -1,9 +1,12 @@
-# JSON contracts (v0.4)
+# JSON contracts (v0.5)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
-(`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers) and `rpg/rules.py`. Aligned with the Story Designer's drafts in
+(`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
+(talk, trades, voice step) and `rpg/rules.py`. Aligned with the Story Designer's drafts in
 `/home/box/rpg-project/content/` (`schemas_proposed.md`, `interpreter_prompt.md`, `narrator_prompt.md`).
-Where v0.2 differed, the content drafts won (see "Changes since v0.3" / "Changes since v0.2" at the end).
+Where v0.2 differed, the content drafts won (see "Changes since ..." at the end). v0.5 accepts the
+PROPOSED talk drafts (`schemas_proposed.md` §d-§g, `npc_persona_schema.md`, `npc_voice_prompt.md`) as
+implemented, with the deviations listed in section (d).
 
 Pipeline: player text -> **interpreter** -> action proposal (a) -> `process_action_proposal(conn,
 character_id, proposal, rng=None)` -> engine result (b) -> **narrator** -> prose ending "What do you do?".
@@ -27,7 +30,10 @@ Principles
                           "description": "iron-banded door", "state": "locked", "lockable": true}]},
   "npcs_present": [{"key": "npc_tall_guard", "name": "Tall Guard", "disposition": "unfriendly",
                     "traits": ["alert"], "status": "alive", "hp_band": "unhurt", "out_of_reach": false,
-                    "conditions": ["blinded"], "visible": true}],
+                    "conditions": ["blinded"], "visible": true,
+                    "topics": [{"key": "guard_post", "label": "his post / why he is here"}],
+                    "trades": [{"key": "trade_buy_flash_powder", "label": "a packet of flash powder"}],
+                    "recent_dialogue": ["oldest line ...", "newest line"]}],
   "visible_items": [{"key": "item_hanging_lamp", "name": "Hanging lamp", "tags": ["fixture"], "fixture": true,
                      "state": null, "out_of_reach": false}],
   "player_inventory": [{"key": "item_rusty_shortsword", "name": "Rusty Shortsword", "equipped": true,
@@ -39,7 +45,7 @@ Principles
                    "skills": {"perception": "proficient", "sleight_of_hand": "proficient"},
                    "weapon_proficiencies": ["simple"],
                    "conditions": [{"name": "strained_str", "description": "...", "lasting": true, "timed": false}],
-                   "features": []},
+                   "features": [], "gold": 60},
   "active_conditions": [{"name": "strained_str", "description": "...", "lasting": true, "timed": false}],
   "hp_band": "scratched",
   "recent_narrations": ["oldest ...", "...", "newest"]
@@ -56,6 +62,12 @@ Principles
   NPC has `visible: false` (still listed: you can hear them, and hostile ones still attack). Exits stay listed.
 - `exits[].lockable` = it has an authored `unlock_dc` (so "the lock" can mean it even after it's opened).
 - `npcs_present[].conditions`: NPC condition names (e.g. `blinded`); `player_inventory[].state` shows `lit`.
+- v0.5 `npcs_present[].topics`: every public `knowledge` topic of the NPC's persona, plus `secrets` whose
+  `min_band` <= the current band (`[{key, label}]`, never text). `trades`: trades listed in `reveal_by_band`
+  at or below the current band, minus completed one-off trades (`[{key, label}]`). `recent_dialogue`: the
+  last 5 lines this NPC said (`npc_dialogue_log`), oldest first. Persona-less or defeated NPCs: `[]`.
+  Secret text, `never` secrets, `insight_tell` and the disposition integer never appear.
+- v0.5 `player_sheet.gold`: the purse, an integer coin count in the same unit as `item_templates.value`.
 
 ## (a) Action proposal (interpreter -> engine)
 
@@ -280,7 +292,10 @@ State change types: `moved_to_location`, `exit_state`, `item_added`, `item_remov
 ### NPC phase (counterattacks)
 After the player's actions on a turn that spent time, each NPC in the player's location (in id order) that
 is alive, `hostile`, and not `out_of_reach` acts once. If it has an incapacitating condition it does
-nothing (`action: "none"`, `reason`: the condition). Otherwise it attacks: d20 + `npcs.attack_bonus` vs
+nothing (`action: "none"`, `reason`: the condition). v0.5: incapacitation is read from the condition's
+`effect` (`no_attack`, `prevents_actions` or `incapacitated` true; `item_flash_powder`'s
+`condition_effect: {no_attack: true}`). The name list (`blinded`, `stunned`, `incapacitated`, `paralyzed`,
+`unconscious`) is only a fallback for a condition with no effect spec; an explicit spec always wins. Otherwise it attacks: d20 + `npcs.attack_bonus` vs
 the **player's defense**; a hit deals `npcs.damage` dice (min 1) to the player's HP. Degree uses the same
 margin bands. The phase stops as soon as the player is at HP <= 0. NPC columns (defaults): `attack_bonus`
 2, `damage` "1d4", `save_bonus` 0.
@@ -304,7 +319,7 @@ name}`, `light_burnt_out {key, name}`.
 | `expired` | See Conditions and durations. `[]` when no time passed. |
 | `time_passed` | Bool, see Time passing. |
 | `player_status` | `{hp_band, conditions: [names]}`. HP bands: `unhurt` (full), `scratched` (>= 75%), `wounded` (>= 40%), `badly_wounded` (>= 15%), `near_death` (> 0), `down` (<= 0). |
-| `dialogue` | `[]` for now. Shape: `[{"speaker_key", "speaker_name", "line", "source": "authored" \| "npc_llm"}]`. |
+| `dialogue` | `[{"speaker_key", "speaker_name", "line", "source": "authored" \| "npc_llm"}]`. Filled by the voice step (section (d)) after the engine resolves and before narration; `[]` otherwise. The narrator uses lines verbatim. |
 | `defeat` | null, or `{"type": "death", "description": ...}` when the player's HP is <= 0 (`down`). A dead player's later proposals resolve nothing and return `defeat` again. The narrator must **not** end a defeat narration with "What do you do?" (the post-processor strips it); the CLI follows with its provisional death policy (`rpg.cli.death_policy`): load the most recent save slot, start a new game, or quit. (`knocked_out`/`captured`: reserved.) |
 | `clarification_question` | Set on clarify turns. |
 | `skipped` | Optional, see above. |
@@ -342,6 +357,120 @@ Item instances (`items` table): `key`, `template_id`, exactly one of `character_
 `display_name`, `quantity`, `equipped`, `uses_left`, `state`, `out_of_reach`. An authored instance's key is
 `item_<slug>`. Extra instances of a template get `item_<slug>_2`, `_3`, and so on (`db.next_item_key`), and a
 split stack gets the next free one.
+
+## (d) Talk and dialogue (v0.5, accepted from `schemas_proposed.md` §d-§g)
+
+### Personas (`npc_persona_schema.md`)
+- Persona YAML is parsed by `rpg/yamlish.py` (a stdlib YAML subset: block maps/lists, flow `[..]`/`{..}`,
+  quoted/plain scalars, comments) and validated by `rpg.personas.validate()` (schema rules 1-4: known
+  topics/trades in `reveal_by_band`, all five bands present, secrets never listed below `min_band`,
+  `never` secrets never listed, trade items must be known templates). The full persona (secrets included)
+  is stored engine-side in `npc_personas(npc_id, persona JSON)` at seed; only `persona_view` (key, name,
+  voice, traits, goals) is ever prompt-facing.
+- At seed the persona sets `npcs.name/description/traits`, `disposition = base_disposition`, and the
+  optional `combat` block (`defense_dc`, `max_hp`, `attack_bonus`, `damage`, `save_bonus`) overrides those
+  `npcs` columns (`max_hp` also resets `current_hp` to full).
+- Demo personas: `rpg/data/npcs/npc_mara.yaml`, `npc_dozing_guard.yaml` (engine-owned demo content; the
+  guard's `combat` numbers are the unchanged v0.4 balance).
+
+### Talk action fields (interpreter -> engine), talk actions only
+`approach` (`ask`, `persuade`, `deceive`, `intimidate`, `insight`, `small_talk`, `trade`, `farewell`),
+`topic` (a key from the NPC's context `topics` or `trades`, or null), `topic_text` (the player's own words
+when `topic` is null). `validate_proposal()` keeps them; non-talk actions never carry them.
+- **Skill pairing is corrected, not rejected:** `persuade` -> `persuasion`, `deceive` -> `deception`,
+  `intimidate` -> `intimidation`, `insight` -> `insight`; others -> null (agreed with the Project Lead).
+- A missing `approach` is inferred from the skill (else `ask`); an unknown value is a re-prompt error.
+  `topic`/`topic_text` must be string or null.
+- A talk with no target: exactly one living NPC here -> that NPC; several -> clarify ("Who do you want to
+  talk to: ...?"); none -> `target_not_present` / `no_target`.
+
+### Resolution
+- **Social DC** (paired approaches only) = `social.base_dc` (default 12) + `social.<skill>` + band modifier
+  (hostile +5, unfriendly +2, neutral 0, friendly -2, allied -5). `est_difficulty` is ignored for persona
+  NPCs; persona-less NPCs keep the v0.4 DC (`est_difficulty`).
+- **Disposition** (int -100..100, banded; only engine events change it). Deltas, success narrow/clear/
+  overwhelming | failure narrow/clear/overwhelming: persuade +10/+15/+25 | 0/-5/-10; deceive +10/+15/+20 |
+  -10/-20/-30; intimidate -10/-10/-15 | -10/-15/-25; insight 0; ask/small_talk/trade/farewell 0; a
+  completed trade +2. An auto-success counts as `clear`. Clamped after each change. Being attacked still
+  sets -100 (hostile). A band change emits `npc_disposition_changed {key, to}`. Applies to persona-less
+  NPCs too. (`npcs.disposition` has been an INTEGER since schema v1: no column conversion was needed.)
+- **Topics:** available = cumulative `reveal_by_band` topics up to the band *after* this turn's change. A
+  successful intimidate evaluates topics one band above the band **before** the drop (cowed). Revealed when
+  available and the check (if any) succeeded; once revealed a topic stays known (`npc_topics_revealed`,
+  unique per NPC+topic) and is revealed again on request regardless of band or check. A topic that exists
+  and is visible in context but isn't available, or whose check failed -> `refused` (label only). A secret
+  not visible at the band, a `never` secret, or a key the NPC doesn't have -> `unknown` (so a hidden
+  secret's existence is never confirmed). No subject (`topic` and `topic_text` null, or small_talk /
+  farewell) -> `none`.
+- `insight` success -> `insight_read` = the persona's `insight_tell` (narrator only; the voice step never
+  sees it).
+
+### Talk block on a resolved talk result
+```json
+"talk": {"npc": "npc_mara", "approach": "trade", "topic": "trade_buy_torch", "topic_text": null,
+         "disposition_band_before": "friendly", "disposition_band_after": "friendly",
+         "requested_topic_status": "none", "allowed_topics": [], "refused_topics": [],
+         "trade": {"key": "trade_buy_torch", "label": "a torch", "status": "completed",
+                   "gives": [{"item": "item_light_source", "name": "Torch", "qty": 1}],
+                   "wants": [{"gold": 5}]},
+         "insight_read": null}
+```
+Field meanings as in `schemas_proposed.md` §f. Persona-less NPC: the block is present with empty lists and
+`trade: null`. Rejected or clarify talk results have no `talk` block.
+
+### Trades and gold (engine extension: coins)
+- Persona `trades.<key>`: `{label, gives: [entry], wants: [entry], repeatable?: bool}`, where an entry is
+  `{item: <template key>, qty: N, name?: <display name, gives only, digit-free>}` **or `{gold: N}`** (coins,
+  same unit as `item_templates.value`). `gives` = what the NPC gives the player.
+- **Band pricing** of coin entries (the `trade` block shows the priced amount): the player pays (`wants`)
+  base x {hostile 1.5, unfriendly 1.25, neutral 1.0, friendly 0.9, allied 0.75}, rounded **up**, min 1; the
+  player receives (`gives`) base x {hostile 0.5, unfriendly 0.75, neutral 1.0, friendly 1.1, allied 1.25},
+  rounded **down**, min 1. (Hostile normally has no trades listed.) Item entries aren't scaled.
+- `approach: trade` + `topic` null -> `offered`: the first open trade involving a template in `items_used`,
+  else the first open trade; `refused` (key/label null) if none.
+- `topic` = a trade key (any approach) -> `completed` if open at the band and the player holds every wanted
+  item (by template, summed across stacks) and has the coins; else `unaffordable`. A trade not open at the
+  band -> `refused` (its label only if the trade is listed at or below the band; a higher-band trade comes
+  back with `label: null`). Non-`repeatable` trades complete once (`world_flags` `trade_done:<npc>:<trade>`).
+- **Completion** is engine-owned: wanted items are removed (`item_removed`), coins move
+  (`characters.gold`, CHECK >= 0; consequence `purse_changed {direction: "spent" | "received"}`, no amount),
+  given items are created as new instances (`item_added`), disposition +2. That is the only way an NPC gives
+  an item or coins; intent text or voice lines claiming a gift do nothing.
+
+### Voice step (`voice_npc`)
+`LLMClient.voice_npc(npc_persona_view, allowed_topics, result, context) -> {"lines": [1-3 strings]}`,
+where `result` = `{player_text, talk (without insight_read and npc, plus outcome/degree), recent_dialogue}`.
+`rpg.talk.voice()` runs it once per **resolved** talk result for an NPC **with** a persona, after
+`process_action_proposal` and before narration (the CLI does this). Post-processing: invalid JSON/shape or
+an exception -> retry once, then no lines (`dialogue` stays `[]` and the narrator falls back to brief
+indirect speech of `allowed_topics` text only). Blank lines dropped; each line clipped to 40 words; at most
+3 lines. Lint: a line sharing a 6-word run with any secret text not in `allowed_topics` (or with
+`insight_tell`) is dropped. Lines are appended to `dialogue` as `{speaker_key, speaker_name, line, source:
+"npc_llm"}` and logged to `npc_dialogue_log(npc_id, turn, line)`. Lines are never parsed for claims.
+MockLLM has a deterministic `voice_npc`; the OpenAI/Anthropic stubs raise `NotImplementedError` (so play
+falls back to indirect speech).
+
+### Deviations from the drafts (for the Story Designer)
+1. `approach` missing -> inferred, not a re-prompt; a skill/approach mismatch is corrected (Lead decision).
+2. Coin entries `{gold: N}` in trades, band price multipliers, optional `repeatable` and gives `name`.
+3. Previously revealed topics stay `revealed` even if the band later drops or a check fails.
+4. Intimidate's "one band higher" is relative to the band before the drop.
+5. `requested_topic_status: "none"` also when a check-based approach has no subject (e.g. bare insight).
+6. Context `topics` lists all public knowledge (§d), not only the band's `reveal_by_band` topics; asking
+   about one not yet available gives `refused`.
+7. Demo personas live in `code/rpg/data/npcs/` (engine-owned), not in `content/`.
+
+## Changes since v0.4
+1. Talk accepted (section (d)): talk action fields, persona social DCs, disposition deltas, topics,
+   `talk` result block, trades with coins, voice step filling `dialogue`.
+2. Context: `npcs_present[].topics/trades/recent_dialogue`, `player_sheet.gold`.
+3. Schema v4: `characters.gold`, `npc_personas`, `npc_topics_revealed`, `npc_dialogue_log`; v2/v3 saves
+   migrate. New consequence `purse_changed`.
+4. NPC incapacitation is driven by the condition effect (`no_attack` / `prevents_actions` /
+   `incapacitated`); the name list is only a fallback.
+5. Persona `combat` blocks set NPC combat stats at seed. Item names may not contain digits (load-time
+   check). `improvised_pick` items pick locks at DC 25 (or the authored DC if higher); bare hands stay
+   `needs_tool`. `stats.condition_effect` drives tonic/flash powder.
 
 ## Changes since v0.3
 1. New top-level `npc_actions`, `expired`, `time_passed`. `defeat` is now `{"type": "death"}` (was `knocked_out`); a defeat narration has no closing line.
