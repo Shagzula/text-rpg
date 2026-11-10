@@ -94,6 +94,8 @@ class Game:
                 text = self._opening(conn)
                 log_narration(conn, self.cid, 0, text)
                 self.out(text)
+            elif self._dead(conn):
+                self.out("(Continuing your game.)")  # BUG-R07: straight to the death offer, no greeting
             else:
                 self.out("(Continuing your game. Type /help for commands.)")
                 self.out(self._opening(conn))
@@ -101,6 +103,10 @@ class Game:
     def player_dead(self) -> bool:
         with db.connect(self.path) as conn:
             row = conn.execute("SELECT current_hp FROM characters WHERE id = ?", (self.cid,)).fetchone()
+        return row is not None and row[0] <= 0
+
+    def _dead(self, conn) -> bool:
+        row = conn.execute("SELECT current_hp FROM characters WHERE id = ?", (self.cid,)).fetchone()
         return row is not None and row[0] <= 0
 
     def _opening(self, conn) -> str:
@@ -232,7 +238,8 @@ class Game:
             if not db.load_rng_state(conn, self.rng):
                 db.save_rng_state(conn, self.rng)
             self.out(f"(Loaded slot '{name}'.)")
-            self.out(self._opening(conn))
+            if not self._dead(conn):
+                self.out(self._opening(conn))
         return True
 
     def latest_slot(self) -> Optional[str]:
@@ -291,10 +298,11 @@ def death_policy(game: "Game") -> str:
     is running again) or "quit"."""
     slot = game.latest_slot()
     options = ([f"[L]oad your most recent save ('{slot}')"] if slot else []) + ["start a [N]ew game", "[Q]uit"]
-    game.out(f"{DEATH_PROMPT} " + ", ".join(options[:-1]) + f", or {options[-1]}?")
+    offer = ", ".join(options[:-1]) + f", or {options[-1]}?"
+    game.out(f"{DEATH_PROMPT} " + offer[0].upper() + offer[1:])
     while True:
         try:
-            choice = (game.input("(l/n/q) > ") or "").strip().lower()
+            choice = (game.input("(l/n/q) > " if slot else "(n/q) > ") or "").strip().lower()
         except (EOFError, KeyboardInterrupt):
             choice = "q"
         if choice in ("l", "load") and slot:

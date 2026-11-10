@@ -88,8 +88,7 @@ def test_flash_powder_from_yaml_stops_the_npc_attack(world):
     db.add_item(conn, "item_flash_powder", character_id=world["cid"])
     r = run(world, act("use_item", target="npc_tall_guard", items_used=["item_flash_powder"]), rng=Script(5))
     assert r["npc_actions"][0]["action"] == "none" and r["npc_actions"][0]["reason"] == "blinded"
-    assert {"type": "npc_condition_expired", "key": "npc_tall_guard", "npc_name": "Tall Guard",
-            "name": "blinded"} in r["expired"]  # "1 round"
+    assert r["expired"] == []  # "1 round" survives into the player's next action (BUG-R01)
 
 
 @needs_items

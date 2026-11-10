@@ -121,9 +121,10 @@ def test_flash_powder_blinds_target_and_cancels_its_attack(world):
     assert not inv.has_item(world["conn"], world["cid"], "item_flash_powder")
     assert r["npc_actions"] == [{"npc": "npc_tall_guard", "name": "Tall Guard", "action": "none",
                                  "reason": "blinded", "outcome": None, "degree": None, "hp_band": "unhurt"}]
+    assert r["expired"] == []  # 1 round: lasts until the NPC's next action (BUG-R01)
+    r = run(world, act("wait"), rng=Script(1))  # expires before the NPC phase, so it attacks again
     assert {"type": "npc_condition_expired", "key": "npc_tall_guard", "npc_name": "Tall Guard",
-            "name": "blinded"} in r["expired"]  # 1 round
-    r = run(world, act("wait"), rng=Script(1))  # it attacks again
+            "name": "blinded"} in r["expired"]
     assert r["npc_actions"][0]["action"] == "attack"
 
 
@@ -192,8 +193,11 @@ def dark_cellar(world):
 
 
 def test_examine_in_the_dark_is_blocked(dark_cellar):
-    r = run(dark_cellar, act("examine", target="loc_cellar"))
+    r = run(dark_cellar, act("examine", target="item_floor_coin"))
     assert (r["results"][0]["reason"], r["results"][0]["detail"]) == ("impossible_action", "too_dark")
+    r = run(dark_cellar, act("examine", target="loc_cellar"))  # looking around shows the dark (BUG-R02)
+    assert r["results"][0]["status"] == "resolved"
+    assert r["results"][0]["target"]["description"] == "It is pitch dark; you can see nothing."
     r = run(dark_cellar, act("examine", target="item_rusty_shortsword"))  # by touch: fine
     assert r["results"][0]["status"] == "resolved"
 

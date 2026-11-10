@@ -19,7 +19,7 @@ def test_build_context_shape(world):
     conn, w = world
     ctx = context.build_context(conn, w["cid"])
     assert set(ctx) == {"location", "npcs_present", "visible_items", "player_inventory", "player_sheet",
-                        "active_conditions", "hp_band", "recent_narrations"}
+                        "active_conditions", "hp_band", "recent_narrations", "felt_items"}
     loc = ctx["location"]
     assert (loc["key"], loc["name"]) == ("loc_storeroom", "Storeroom")
     assert loc["description"] == "A cramped room of shelves and crates."

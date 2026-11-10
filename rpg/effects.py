@@ -208,9 +208,29 @@ def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: in
 # End of turn: ticking timers
 # ---------------------------------------------------------------------------
 
+def npc_condition_mark(conn) -> int:
+    """Highest npc_conditions id so far; conditions with a higher id were applied this turn."""
+    return conn.execute("SELECT COALESCE(MAX(id), 0) FROM npc_conditions").fetchone()[0]
+
+
+def tick_npc_conditions(conn, applied_before: int) -> List[Dict]:
+    """BUG-R01: NPC conditions count the NPC's actions. They tick after the player's actions and
+    *before* the NPC phase, skipping ones applied this turn. A "1 round" blind thrown on turn T
+    stops the NPC's attack on T, still gives advantage to the player's attack on T+1, and expires
+    before the NPC acts on T+1."""
+    out: List[Dict] = []
+    conn.execute("UPDATE npc_conditions SET duration_turns = duration_turns - 1 "
+                 "WHERE duration_turns IS NOT NULL AND id <= ?", (applied_before,))
+    for r in conn.execute("SELECT c.id, c.name, n.key, n.name AS npc_name FROM npc_conditions c "
+                          "JOIN npcs n ON n.id = c.npc_id WHERE c.duration_turns <= 0").fetchall():
+        conn.execute("DELETE FROM npc_conditions WHERE id = ?", (r["id"],))
+        out.append({"type": "npc_condition_expired", "key": r["key"], "npc_name": r["npc_name"], "name": r["name"]})
+    return out
+
+
 def tick(conn, character_id) -> List[Dict]:
-    """Advance one turn: timed player conditions, NPC conditions and lit light sources
-    count down; at 0 they expire. Returns `expired` entries (no numbers)."""
+    """End of turn: timed player conditions and lit light sources count down; at 0 they
+    expire. (NPC conditions tick earlier, see tick_npc_conditions.) Returns `expired` entries."""
     out: List[Dict] = []
     conn.execute("UPDATE character_conditions SET duration_turns = duration_turns - 1 "
                  "WHERE character_id = ? AND duration_turns IS NOT NULL", (character_id,))
@@ -218,11 +238,6 @@ def tick(conn, character_id) -> List[Dict]:
                           (character_id,)).fetchall():
         conn.execute("DELETE FROM character_conditions WHERE id = ?", (r["id"],))
         out.append({"type": "condition_expired", "target": "self", "name": r["name"]})
-    conn.execute("UPDATE npc_conditions SET duration_turns = duration_turns - 1 WHERE duration_turns IS NOT NULL")
-    for r in conn.execute("SELECT c.id, c.name, n.key, n.name AS npc_name FROM npc_conditions c "
-                          "JOIN npcs n ON n.id = c.npc_id WHERE c.duration_turns <= 0").fetchall():
-        conn.execute("DELETE FROM npc_conditions WHERE id = ?", (r["id"],))
-        out.append({"type": "npc_condition_expired", "key": r["key"], "npc_name": r["npc_name"], "name": r["name"]})
     conn.execute("UPDATE items SET timer = timer - 1 WHERE state = ? AND timer IS NOT NULL", (LIGHT_STATE,))
     for r in conn.execute("SELECT key FROM items WHERE state = ? AND timer <= 0", (LIGHT_STATE,)).fetchall():
         item = inv.get_item(conn, r["key"])

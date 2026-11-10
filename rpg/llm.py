@@ -98,7 +98,7 @@ VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("i", "inv", "inventory"), "inventory"),
     (("rest", "sleep"), "rest"),
     (("wait", "z"), "wait"),
-    (("look", "l", "examine", "x", "inspect", "search"), "examine"),
+    (("look", "l", "examine", "x", "inspect", "search", "feel", "grope", "rummage"), "examine"),
     (("go", "move", "walk", "enter", "climb", "head", "run"), "move"),
     (("take", "get", "grab", "pick up", "pickup"), "take"),
     (("drop", "leave"), "drop"),
@@ -127,6 +127,8 @@ TALK_SUMMARY = {"ask": "Ask the {npc}{about}.", "persuade": "Try to persuade the
                 "insight": "Study the {npc} for what they are hiding{about}.", "small_talk": "Chat with the {npc}.",
                 "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}."}
 SUBJECT_SPLITS = (" about ", " regarding ", " for ", " into ", " that ", " to tell me about ", " to tell me ")
+SEARCH_WORDS = ("search", "feel", "grope", "rummage")
+ROOM_WORDS = ("", "room", "area", "around", "here", "the room", "the area", "around the room", "place")
 KEY_PREFIXES = {"item", "npc", "loc", "pc"}  # slug prefixes are not words to match on (BUG-14)
 OOC_WORDS = {"quit": "quit", "exit": "quit", "save": "save", "load": "load", "help": "help",
              "stats": "stats", "undo": "undo"}
@@ -185,13 +187,17 @@ class MockLLM:
                                           "wait": "Wait and watch."}[verb])
         elif verb == "examine":
             action.update(action_type="examine", est_difficulty="trivial")
+            if text.split()[0] in SEARCH_WORDS:  # BUG-R08: searching is an investigation check
+                action.update(skill="investigation", est_difficulty="medium")
+            if rest in ROOM_WORDS:
+                rest = ""
             if rest:
                 key, amb = self._match(rest, context, ("npc", "item", "inv", "exit", "loc"), "item")
                 self._apply_target(action, key, amb, rest, refs)
                 action["intent_summary"] = f"Examine the {rest}."
             else:
                 action["target"] = (context.get("location") or {}).get("key")
-                action["intent_summary"] = "Look around."
+                action["intent_summary"] = "Search the area." if action["skill"] else "Look around."
         elif verb == "move":
             exits = (context.get("location") or {}).get("exits", [])
             if direction:
@@ -239,7 +245,7 @@ class MockLLM:
                 if any(e["to"] == tkey for e in (context.get("location") or {}).get("exits", [])):
                     # lockpicks pick, anything else pries (the engine decides from the tool's stats)
                     action["skill"] = "sleight_of_hand" if "lock" in item_txt else "athletics"
-            elif key in {i["key"] for i in context.get("visible_items", [])}:
+            elif key in {i["key"] for i in context.get("visible_items", []) + context.get("felt_items", [])}:
                 action["target"] = key  # a fixture or scene object
             else:
                 action["target"] = "self"
@@ -335,7 +341,7 @@ class MockLLM:
         if "npc" in pools:
             out += [(n["key"], n["name"]) for n in context.get("npcs_present", [])]
         if "item" in pools:
-            out += [(i["key"], i["name"]) for i in context.get("visible_items", [])]
+            out += [(i["key"], i["name"]) for i in context.get("visible_items", []) + context.get("felt_items", [])]
         if "inv" in pools:
             out += [(i["key"], i["name"]) for i in context.get("player_inventory", [])]
         if "exit" in pools:
@@ -485,6 +491,8 @@ class MockLLM:
         "already_open": "It's already open.",
         "already_full": "You're already in full health; better to save it.",
         "no_target": "There's no one here to talk to.",
+        "needs_target": "Use it on what? On its own, it does nothing.",
+        "no_effect": "Nothing happens.",
         "light_not_held": "You'd need to be holding it.",
     }
     DEGREE_WORD = {"narrow": "Just barely, ", "clear": "", "overwhelming": "Easily, ", None: ""}
@@ -503,6 +511,9 @@ class MockLLM:
             moved = [c for c in r["state_changes"] if c["type"] == "moved_to_location"]
             out.append(f"{self.DEGREE_WORD[r['degree']]}you make your way to the {moved[0]['name']}." if moved
                        else "You move on.")
+            if moved and moved[0].get("dark"):  # BUG-R02: say it's dark, and how to get out
+                out.append(self._describe_scene(context).replace(f"\n\n{CLOSING_LINE}", "")
+                           .replace(f"You are in the {(context.get('location') or {}).get('name')}. ", ""))
         elif at == "examine" and ok:
             target = r.get("target") or {}
             if not target or target.get("key") == (context.get("location") or {}).get("key"):
@@ -574,7 +585,9 @@ class MockLLM:
         return {
             "exit_state": "The way opens.",
             "item_added": f"You take the {c.get('name')}.",
-            "item_removed": f"The {c.get('name')} is gone from your pack." if not c.get("to") else f"You set down the {c.get('name')}.",
+            "item_removed": (f"You set down the {c.get('name')}." if c.get("to")
+                             else f"Nothing is left of the {c.get('name')}." if c.get("from") == "scene"
+                             else f"The {c.get('name')} is gone from your pack."),
             "item_equipped": f"You ready the {c.get('name')}.",
             "item_unequipped": f"You put away the {c.get('name')}.",
             "npc_defeated": f"The {c.get('name')} goes down and stays down.",

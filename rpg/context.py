@@ -89,7 +89,7 @@ def build_context(conn, character_id: int) -> Dict:
         raise ValueError(f"Character {character_id} not found")
     loc = conn.execute("SELECT * FROM locations WHERE id = ?", (ch["location_id"],)).fetchone()
     location = None
-    npcs, items = [], []
+    npcs, items, felt = [], [], []
     if loc is not None:
         lit = effects.location_is_lit(conn, loc["id"], character_id)
         location = {"key": loc["key"], "name": loc["name"],
@@ -105,6 +105,9 @@ def build_context(conn, character_id: int) -> Dict:
                          "out_of_reach": bool(n["out_of_reach"]),
                          "conditions": effects.npc_conditions(conn, n["id"]),
                          "visible": lit, **npc_talk_context(conn, n)})
+        # BUG-R03: in the dark you can still feel for fixed scenery (a lever) by name
+        felt = [] if lit else [{"key": i["key"], "name": i["name"], "fixture": True}
+                               for i in list_location_items(conn, loc["id"]) if i["fixture"] and not i["out_of_reach"]]
         items = [] if not lit else [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
                   "state": i["state"], "out_of_reach": i["out_of_reach"]}
                  for i in list_location_items(conn, loc["id"])]
@@ -113,6 +116,7 @@ def build_context(conn, character_id: int) -> Dict:
         "location": location,
         "npcs_present": npcs,
         "visible_items": items,
+        "felt_items": felt,
         "player_inventory": [{"key": i["key"], "name": i["name"], "equipped": i["equipped"],
                               "slot": i["slot"], "quantity": i["quantity"], "state": i["state"]}
                              for i in list_inventory(conn, character_id)],

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import db, effects, rules, talk
 from . import inventory as inv
+from . import context
 from .context import npc_hp
 from .inventory import ItemError
 
@@ -379,11 +380,15 @@ class Turn:
         for k in a["items_used"]:
             self.item(k, reach=False)
         held = t is not None and (t.kind == "self" or (t.kind == "item" and t.row["character_id"] == self.cid))
-        if not a["skill"] and not held and not self.lit:
+        here = t is None or (t.kind == "location" and t.row["id"] == self.loc_id)
+        lit = self.lit
+        if not a["skill"] and not held and not here and not lit:
             raise Reject("impossible_action", "too_dark")  # searching (a skill) is allowed, at disadvantage
         target = t.ref() if t else None
         if t is not None:
             target["description"] = self._describe(t)
+            if here and not lit:  # BUG-R02: looking around in the dark shows the darkness
+                target["description"] = context.DARK_DESCRIPTION
         if a["skill"]:
             return self.result(a, target=target, check=self.check(a, a["skill"], self.dc_for(a, t)))
         return self.result(a, target=target)
@@ -418,12 +423,24 @@ class Turn:
         here = self.conn.execute("SELECT key FROM locations WHERE id = ?", (self.loc_id,)).fetchone()["key"]
         db.set_flag(self.conn, f"last_location:{self.cid}", here)
         self.conn.execute("UPDATE characters SET location_id = ? WHERE id = ?", (dest, self.cid))
-        changes = [{"type": "moved_to_location", "key": t.key, "name": t.row["to_name"]}]
+        changes = [{"type": "moved_to_location", "key": t.key, "name": t.row["to_name"],
+                    "dark": not self.lit}]  # BUG-R02: arriving somewhere pitch dark
         flag = f"visited:{t.key}"
         if not db.get_flag(self.conn, flag):
             db.set_flag(self.conn, flag, True)
             changes.append({"type": "flag_set", "key": flag, "value": True})
         return self.result(a, target=t, check=check, state_changes=changes)
+
+    def default_talk_target(self, a) -> Tuple[Dict, Optional[str]]:
+        """Bare 'talk': the only living NPC here, or a question if there are several."""
+        npcs = self.conn.execute("SELECT key, name FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id",
+                                 (self.loc_id,)).fetchall()
+        if len(npcs) == 1:
+            return {**a, "target": npcs[0]["key"]}, None
+        if len(npcs) > 1:
+            names = [n["name"] for n in npcs]
+            return a, "Who do you want to talk to: " + ", ".join(names[:-1]) + " or " + names[-1] + "?"
+        return a, None
 
     def do_talk(self, a, t):
         if t is None:
@@ -609,6 +626,11 @@ class Turn:
                                DIFFICULTY_DC.get(spec.get("est_difficulty"), DIFFICULTY_DC["easy"]))
             if not check.success:
                 return self.result(a, target=t, check=check)
+        if (check is None and not effect and not stats.get("use_sets_flag")
+                and (t is None or t.kind == "self" or t.key == item["key"])):
+            # BUG-R05: a tool or weapon used on nothing does nothing; no free success, no time
+            raise Reject("impossible_action", "needs_target" if enables or item["category"] in ("tool", "weapon")
+                         else "no_effect")
         cons, changes = [], []
         if effect == "heal" and self.char_row["current_hp"] >= self.char_row["max_hp"]:
             raise Reject("item_unusable", "already_full")  # don't waste it (BUG-08)
@@ -641,7 +663,10 @@ class Turn:
             out.append({"type": "item_consumed", "key": item["key"], "name": item["name"],
                         "description": f"{item['name']} used up"})
             if inv.get_item(self.conn, item["key"]) is None:
-                out.append({"type": "item_removed", "key": item["key"], "name": item["name"]})
+                gone = {"type": "item_removed", "key": item["key"], "name": item["name"]}
+                if item["character_id"] != self.cid:
+                    gone["from"] = "scene"  # BUG-R06: used where it lay, not from the pack
+                out.append(gone)
         else:
             out.append({"type": "item_used", "key": item["key"], "name": item["name"],
                         "description": f"{item['name']} has uses left"})
@@ -811,6 +836,7 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 "npc_actions": [], "expired": [], "defeat": death(), "clarification_question": None,
                 "time_passed": False}
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
+    npc_mark = effects.npc_condition_mark(conn)
     actions = prop["actions"]
     results: List[Dict] = []
     skipped: List[Dict] = []
@@ -834,6 +860,12 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 question = a["clarification_question"] or _generic_question([a["intent_summary"]])
                 results.append(turn.clarify(a))
                 continue
+            if a["action_type"] == "talk" and a["target"] is None:
+                a, ask = turn.default_talk_target(a)  # BUG-R04
+                if ask:
+                    question = ask
+                    results.append(turn.clarify(a))
+                    continue
             r = turn.resolve(a)
             results.append(r)
             if r["status"] == "resolved" and r["outcome"] == "failure":
@@ -845,8 +877,9 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     # were all rejected or clarification requests cost nothing.
     time_passed = any(r["status"] == "resolved" for r in results)
     if time_passed:
+        expired = effects.tick_npc_conditions(conn, npc_mark)
         npc_actions = effects.npc_phase(conn, character_id, rng, turn.turn)
-        expired = effects.tick(conn, character_id)
+        expired += effects.tick(conn, character_id)
     else:
         _undo_turn(conn, character_id)
         turn.turn -= 1

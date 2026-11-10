@@ -184,7 +184,8 @@ def test_exit_unlock_dc_overrides_hint(world, caplog):
 def test_move_through_open_exit(world):
     [r] = run(world, act("move", target="loc_back_hall"))["results"]
     assert (r["outcome"], r["reason"], r["degree"]) == ("success", "no_check", None)
-    assert r["state_changes"] == [{"type": "moved_to_location", "key": "loc_back_hall", "name": "Back Hall"},
+    assert r["state_changes"] == [{"type": "moved_to_location", "key": "loc_back_hall", "name": "Back Hall",
+                                    "dark": False},
                                   {"type": "flag_set", "key": "visited:loc_back_hall", "value": True}]
     assert char(world)["location_id"] == world["hall"]
     [r] = run(world, act("move", target="loc_storeroom"))["results"]
