@@ -234,3 +234,34 @@ def test_r2_07_absent_npc_line_is_people_shaped(demo):
     assert "Mara isn't here." in text and "that isn't here" not in text
     _, text = say(demo, "talk to the blacksmith")
     assert "There's nobody like that here." in text
+
+
+@pytest.mark.parametrize("text", ["ask mara about the lever in the cellar", "ask mara about the hidden lever",
+                                  "ask mara about mara_past", "ask mara about her dealings with the merchant",
+                                  "ask mara about fencing stolen goods", "ask mara about cellar_lever",
+                                  "lie to mara about being the merchant's partner"])
+def test_r2_06_no_loose_topic_match_and_unknown(demo, text):
+    conn, cid = demo
+    p = llm_mod.MockLLM().interpret(text, build_context(conn, cid))
+    assert p["actions"][0]["topic"] is None
+    r, narration = say(demo, text, 2, 2)
+    t = r["results"][0]["talk"]
+    assert t["requested_topic_status"] == "unknown" and t["allowed_topics"] == []
+    for secret in ("fence stolen goods", "old lever in the cellar wall", "sleeps like a stone"):
+        assert secret not in narration
+
+
+@pytest.mark.parametrize("text,topic", [("ask mara about the cellar", "the_cellar"),
+                                        ("ask mara about the cellar door", "the_cellar"),
+                                        ("ask mara about her stall", "mara_self"),
+                                        ("ask mara about market news", "market_news"),
+                                        ("ask mara about the guard", "guard_sleeps")])
+def test_r2_06_keys_labels_and_aliases_still_match(demo, text, topic):
+    p = llm_mod.MockLLM().interpret(text, build_context(*demo))
+    assert p["actions"][0]["topic"] == topic
+
+
+def test_r2_06_secret_aliases_hidden_below_band(demo):
+    ctx = build_context(*demo)
+    mara = next(n for n in ctx["npcs_present"] if n["key"] == "npc_mara")
+    assert "the hidden lever" not in str(mara)  # cellar_lever (allied) and its aliases stay out of context

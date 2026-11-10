@@ -290,23 +290,30 @@ class MockLLM:
             key = npcs[0]["key"]
         self._apply_target(action, key, amb, npc_txt or "them", refs)
         npc = next((n for n in context.get("npcs_present", []) if n["key"] == action["target"]), None)
+        quantity = None
+        if approach == "trade" and subject:
+            quantity, subject = _split_quantity(subject)
         topic, topic_text = None, (_strip_articles(subject) or None) if subject else None
         if npc and subject:
-            pool = npc.get("trades", []) if approach == "trade" else npc.get("topics", [])
-            want = _words(subject) - STOPWORDS
-            if first == "sell":
-                pool = [t for t in pool if "sell" in t["key"]] or pool
-            elif first in ("buy", "purchase"):
-                pool = [t for t in pool if "sell" not in t["key"]] or pool
-            scored = sorted(((len(want & (_words(t["label"]) | _words(t["key"].replace("_", " ")))), t["key"])
-                             for t in pool), reverse=True)
-            if scored and scored[0][0]:
-                topic, topic_text = scored[0][1], None
+            # BUG-R2-06: only exact key / label / alias (or traded item name) matches, no loose overlap
+            if approach == "trade":
+                pool = npc.get("trades", [])
+                if first == "sell":
+                    pool = [t for t in pool if any("gold" in e for e in t.get("gives", []))]
+                elif first in ("buy", "purchase"):
+                    pool = [t for t in pool if any("item" in e for e in t.get("gives", []))]
+            else:
+                pool = npc.get("topics", [])
+            hit = _topic_match(subject, pool, sell=first == "sell")
+            if hit:
+                topic, topic_text = hit, None
         if approach in ("small_talk", "farewell"):
             topic, topic_text = None, None
         name = npc["name"] if npc else (npc_txt or "them")
         about = f" about {topic_text or subject}" if (topic_text or subject) and approach != "trade" else \
             (f" for {subject}" if subject else "")
+        if quantity is not None:
+            action["quantity"] = quantity
         action.update(action_type="talk", skill=TALK_SKILL.get(approach), est_difficulty="medium",
                       approach=approach, topic=topic, topic_text=topic_text,
                       intent_summary=TALK_SUMMARY[approach].format(npc=name, about=about[:60]))
@@ -632,6 +639,47 @@ class MockLLM:
         if t == "purse_changed":
             return "Coins change hands." if c.get("direction") == "spent" else "Coins clink into your purse."
         return ""
+
+
+NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                "eight": 8, "nine": 9, "ten": 10, "zero": 0, "no": 0}
+DETERMINERS = ("the", "a", "an", "some", "your", "his", "her", "their", "my", "this", "that", "any")
+
+
+def _split_quantity(subject: str):
+    """'-1 torch' -> (-1, 'torch'); 'two torches' -> (2, 'torches'); 'a torch' -> (None, 'a torch')."""
+    m = re.match(r"^\s*(-?\d+)\s+(.*)$", subject)
+    if m:
+        return int(m.group(1)), m.group(2)
+    w, _, rest = subject.partition(" ")
+    if w in NUMBER_WORDS and w not in ("a", "an") and rest:
+        return NUMBER_WORDS[w], rest
+    return None, subject
+
+
+def _norm_phrase(text: str) -> str:
+    words = re.findall(r"[a-z0-9']+", text.lower().replace("_", " "))
+    while words and words[0] in DETERMINERS:
+        words = words[1:]
+    if words and len(words[-1]) > 3 and words[-1].endswith("s") and not words[-1].endswith("ss"):
+        words[-1] = words[-1][:-1]  # plural -> singular, both sides
+    return " ".join(words)
+
+
+def _topic_match(subject: str, pool: List[Dict], sell: bool = False) -> Optional[str]:
+    """Exact (normalized) match of the subject against a topic/trade key, a label segment
+    ('a / b'), an alias, or for trades the name of the traded item (or its last word)."""
+    want = _norm_phrase(subject)
+    if not want:
+        return None
+    for t in pool:
+        names = [t["key"]] + [seg for seg in t.get("label", "").split("/")] + list(t.get("aliases", []))
+        for e in (t.get("wants", []) if sell else t.get("gives", [])):
+            if e.get("name"):
+                names += [e["name"], e["name"].split()[-1]]
+        if want in {_norm_phrase(n) for n in names if n}:
+            return t["key"]
+    return None
 
 
 def _join(items: List[str]) -> str:

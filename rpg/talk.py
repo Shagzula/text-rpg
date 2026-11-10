@@ -84,6 +84,15 @@ def price(entry: Dict, band: str, side: str) -> Dict:
     return {"gold": max(1, math.floor(g * personas.SELL_PRICE_MULT[band]))}
 
 
+def trade_context(conn, p: Dict, key: str, band: str) -> Dict:
+    """Prompt-facing trade entry: key, label, optional aliases, band-priced gives/wants."""
+    v = trade_view(conn, p, key, band, "offered")
+    e = {"key": key, "label": v["label"], "gives": v["gives"], "wants": v["wants"]}
+    if p["trades"][key].get("aliases"):
+        e["aliases"] = list(p["trades"][key]["aliases"])
+    return e
+
+
 def trade_view(conn, p: Dict, key: str, band: str, status: str) -> Dict:
     tr = p["trades"][key]
 

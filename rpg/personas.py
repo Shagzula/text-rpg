@@ -59,6 +59,10 @@ def validate(p: Dict, template_keys: Iterable[str]) -> Dict:
     for k, t in {**knowledge, **secrets}.items():
         if not isinstance(t, dict) or not t.get("label") or not t.get("text"):
             bad(f"topic {k!r} needs label and text")
+    for k, t in {**knowledge, **secrets, **(p.get("trades") or {})}.items():
+        al = t.get("aliases") if isinstance(t, dict) else None
+        if al is not None and (not isinstance(al, list) or not all(isinstance(x, str) and x.strip() for x in al)):
+            bad(f"{k!r} aliases must be a list of non-empty strings")
     if set(knowledge) & set(secrets):
         bad("knowledge and secrets share one key namespace")
     for k, s in secrets.items():
@@ -192,7 +196,14 @@ def visible_topics(p: Optional[Dict], band: str) -> List[Dict]:
     if not p:
         return []
     keys = list(p.get("knowledge") or {}) + list(p.get("secrets") or {})
-    return [{"key": k, "label": topic(p, k)["label"]} for k in keys if topic_visible(p, k, band)]
+    out = []
+    for k in keys:
+        if topic_visible(p, k, band):
+            e = {"key": k, "label": topic(p, k)["label"]}
+            if topic(p, k).get("aliases"):
+                e["aliases"] = list(topic(p, k)["aliases"])
+            out.append(e)
+    return out
 
 
 def social_dc(p: Dict, skill: str, band: str) -> int:

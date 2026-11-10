@@ -37,24 +37,30 @@ insight_tell: "Her eyes flick to the storeroom door whenever the cellar comes up
 knowledge:
   mara_self:
     label: "Mara herself / her stall"
+    aliases: [yourself, you, your stall, the stall, mara]
     text: "She has kept a stall on this square since she was a girl and sells whatever travellers need."
   the_storeroom:
     label: "the storeroom to the east"
+    aliases: [storeroom, the merchant, the wine merchant]
     text: "The storeroom belongs to the old wine merchant. His guard dozes in there most nights."
   market_news:
     label: "news from the market"
+    aliases: [news, market news, the market, gossip]
     text: "Trade is slow since the merchant shut his cellar. Rope and lamp oil still sell."
   the_cellar:
     label: "the cellar under the storeroom"
+    aliases: [cellar, the cellar door, cellar door]
     text: "Nobody has been down in the cellar since the merchant left. The door is iron-banded and locked, and it is pitch dark below."
 
 secrets:
   guard_sleeps:
     label: "the guard's habits"
+    aliases: [the guard, guard, the dozing guard, dozing guard]
     text: "The dozing guard sleeps like a stone. A quiet hand can work the cellar lock right under his nose."
     min_band: friendly
   cellar_lever:
     label: "what is hidden in the cellar"
+    aliases: [the lever, lever, the hidden lever]
     text: "There is an old lever in the cellar wall. Folk say it opens a gate somewhere beneath the square."
     min_band: allied
   mara_past:
@@ -72,23 +78,28 @@ reveal_by_band:
 trades:
   trade_buy_rations:
     label: "a day's travel rations"
+    aliases: [rations, ration, food, travel rations]
     gives: [{item: item_rations, qty: 1}]
     wants: [{gold: 5}]
     repeatable: true
   trade_buy_torch:
     label: "a torch"
+    aliases: [torch, a light]
     gives: [{item: item_light_source, qty: 1, name: Torch}]
     wants: [{gold: 5}]
     repeatable: true
   trade_sell_rope:
     label: "buying a coil of rope from you"
+    aliases: [rope, my rope, a coil of rope]
     gives: [{gold: 8}]
     wants: [{item: item_rope, qty: 1}]
   trade_buy_tonic:
     label: "a bracing tonic from under the counter"
+    aliases: [tonic, bracing tonic]
     gives: [{item: item_bracing_tonic, qty: 1}]
     wants: [{gold: 75}]
   trade_tonic_for_rope:
     label: "a tonic in exchange for rope"
+    aliases: [tonic for rope, swap rope for tonic]
     gives: [{item: item_bracing_tonic, qty: 1}]
     wants: [{item: item_rope, qty: 1}]

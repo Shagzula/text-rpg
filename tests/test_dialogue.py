@@ -154,10 +154,13 @@ def test_context_topics_trades_and_gold(g):
     mara = next(n for n in ctx["npcs_present"] if n["key"] == "npc_mara")
     keys = {t["key"] for t in mara["topics"]}
     assert {"mara_self", "the_cellar", "guard_sleeps"} <= keys and "cellar_lever" not in keys
-    assert {"key": "trade_buy_torch", "label": "a torch"} in mara["trades"]
+    torch = next(t for t in mara["trades"] if t["key"] == "trade_buy_torch")
+    assert torch == {"key": "trade_buy_torch", "label": "a torch", "aliases": ["torch", "a light"],
+                     "gives": [{"item": "item_light_source", "name": "Torch", "qty": 1}], "wants": [{"gold": 5}]}
     assert "trade_tonic_for_rope" not in {t["key"] for t in mara["trades"]}
     assert ctx["player_sheet"]["gold"] == 60
-    assert all(set(t) == {"key", "label"} for t in mara["topics"] + mara["trades"])
+    assert all(set(t) <= {"key", "label", "aliases"} for t in mara["topics"])
+    assert all(set(t) <= {"key", "label", "aliases", "gives", "wants"} for t in mara["trades"])
 
 
 def test_context_drops_completed_one_off_trade(g):

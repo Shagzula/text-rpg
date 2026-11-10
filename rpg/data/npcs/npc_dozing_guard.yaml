@@ -36,14 +36,17 @@ insight_tell: "Even half asleep, he keeps one boot planted toward the cellar doo
 knowledge:
   guard_post:
     label: "his post / why he is here"
+    aliases: [your post, your job, his job, the post, why you are here]
     text: "He is paid to keep folk out of the cellar, and to stay awake while he does it."
   the_cellar_door:
     label: "the cellar door"
+    aliases: [cellar door, the door, door, cellar, the cellar]
     text: "The cellar door sticks. It takes a strong shoulder or a good set of picks."
 
 secrets:
   the_lever:
     label: "what is down in the cellar"
+    aliases: [lever, the lever]
     text: "Down in the cellar there is an old lever. Pull it and something under the square clunks open."
     min_band: friendly
   who_pays:
@@ -61,5 +64,6 @@ reveal_by_band:
 trades:
   trade_buy_flash_powder:
     label: "a packet of flash powder from the guard stores"
+    aliases: [flash powder, powder, a packet of flash powder]
     gives: [{item: item_flash_powder, qty: 1}]
     wants: [{gold: 30}]
