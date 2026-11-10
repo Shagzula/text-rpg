@@ -33,6 +33,7 @@ python3 rpg_engine.py play ...  # same CLI via Dan's starter file
 Type plain actions: `look`, `go east`, `take crowbar`, `pick the lock`, `use crowbar on door`,
 `desperately kick the door`, `light torch`, `down` / `d`, `up` / `u`, `back`, `pull lever`, `attack guard`,
 `throw flash powder at guard`, `drink tonic`, `drink healing draught`, `i`, `rest`, `wait`.
+In the dark: `look` (shows the darkness and the ways out), `search` / `feel around` (investigation at disadvantage), `pull lever` (fixtures can be found by touch).
 Talk: `talk to mara`, `ask mara about the cellar`, `persuade mara about ...`, `lie to the guard about ...`,
 `threaten the guard`, `read mara` (insight), `hello mara`, `goodbye mara`, `trade with mara`,
 `buy a torch from mara`, `sell rope to mara`. Bare `talk` talks to the only person here (or asks which).

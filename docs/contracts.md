@@ -61,6 +61,9 @@ Principles
   `description` is replaced by "It is pitch dark; you can see nothing.", `visible_items` is `[]`, and every
   NPC has `visible: false` (still listed: you can hear them, and hostile ones still attack). Exits stay listed.
 - `exits[].lockable` = it has an authored `unlock_dc` (so "the lock" can mean it even after it's opened).
+- v0.5 `felt_items`: when `dark && !lit`, the fixtures here (`[{key, name, fixture: true}]`, e.g. a lever)
+  that can be found and used by touch (not examined). `[]` otherwise. Interpreters should match names against
+  these before falling back to inventory items.
 - `npcs_present[].conditions`: NPC condition names (e.g. `blinded`); `player_inventory[].state` shows `lit`.
 - v0.5 `npcs_present[].topics`: every public `knowledge` topic of the NPC's persona, plus `secrets` whose
   `min_band` <= the current band (`[{key, label}]`, never text). `trades`: trades listed in `reveal_by_band`
@@ -179,7 +182,7 @@ Nothing changes in the DB and no turn is spent.
 | `outcome` | `success`, `failure`, `clarify`. Rejected actions are `failure`. |
 | `degree` | `narrow` (margin 0-4), `clear` (5-9), `overwhelming` (10+). The same bands apply to success and failure. **null whenever nothing was rolled** (auto-success, impossible, no_check, rejected, clarify). |
 | `reason` | Check: `auto_success`, `rolled`, `last_ditch`, `impossible`, `impossible_even_last_ditch`. Validation: `item_not_owned`, `target_not_present`, `item_unusable`, `out_of_reach`, `impossible_action`. Other: `clarify`, `no_check`. |
-| `detail` | Only on rejections. Machine-readable hint for the narrator or logs: `no_such_item`, `elsewhere`, `no_exit`, `unknown_key`, `exit_locked`, `already_here`, `not_an_exit`, `fixture`, `already_held`, `not_equippable`, `not_equipped`, `slot_occupied`, `target_defeated`, `not_a_creature`, `not_attackable`, `self`, `enemies_present`, `lacks_ability`, `no_item`, `no_target`, `no_destination`; new in v0.4: `unrecognized`, `too_dark`, `needs_tool`, `already_open`, `already_full`, `not_held`, `light_not_held`, `no_way_back`. |
+| `detail` | Only on rejections. Machine-readable hint for the narrator or logs: `no_such_item`, `elsewhere`, `no_exit`, `unknown_key`, `exit_locked`, `already_here`, `not_an_exit`, `fixture`, `already_held`, `not_equippable`, `not_equipped`, `slot_occupied`, `target_defeated`, `not_a_creature`, `not_attackable`, `self`, `enemies_present`, `lacks_ability`, `no_item`, `no_target`, `no_destination`; new in v0.5: `needs_target`, `no_effect`; new in v0.4: `unrecognized`, `too_dark`, `needs_tool`, `already_open`, `already_full`, `not_held`, `light_not_held`, `no_way_back`. |
 | `skill`, `ability` | Set only when a check or attack was resolved. Attacks have `skill: null`. |
 | `auto_success`, `impossible`, `last_ditch` | Booleans from the check. They are false when there was no check. |
 | `target` | `{key, name}` (`examine` adds `description`). `"self"` -> `{"key": "self", "name": "you"}`. |
@@ -191,7 +194,8 @@ Nothing changes in the DB and no turn is spent.
 | `target_not_present` | The target key is unknown, is somewhere else, or names a location with no exit from here. `take` of an item not here. |
 | `item_unusable` | Taking a `fixture` or an item already held, equipping a slot-`none` item, unequipping something not equipped, a healing item at full HP (`already_full`; nothing is spent). |
 | `out_of_reach` | The item or NPC has `out_of_reach` set: no take, use or melee. Ranged and thrown weapons can still hit it, and it can still be examined. |
-| `impossible_action` | Categorical: moving through a locked exit, `move` to a non-exit, attacking yourself or a defeated NPC, talking to a non-creature or a defeated NPC, resting with a hostile NPC present, **any `action_type: "other"` with `skill: null`** (`lacks_ability` if `near_impossible`, else `unrecognized`: the engine has nothing to model, so it is never a free success), examining something not held in the dark (`too_dark`), picking a lock without a lock tool (`needs_tool`), picking/forcing an exit that is already open (`already_open`). |
+| `impossible_action` | Categorical: moving through a locked exit, `move` to a non-exit, attacking yourself or a defeated NPC, talking to a non-creature or a defeated NPC, resting with a hostile NPC present, **any `action_type: "other"` with `skill: null`** (`lacks_ability` if `near_impossible`, else `unrecognized`: the engine has nothing to model, so it is never a free success), examining something not held in the dark (`too_dark`), picking a lock without a lock tool (`needs_tool`), picking/forcing an exit that is already open (`already_open`), v0.5: using a tool or weapon on nothing /
+yourself (`needs_target`) or an item with no effect on nothing (`no_effect`). |
 
 `talk` with no target is `target_not_present` / `no_target`.
 
@@ -214,7 +218,8 @@ only what is sent) and listed in an optional top-level
 
 ### Time passing
 A turn **spends time only if at least one action resolved** (`time_passed: true`). Then, after the
-player's actions: the NPC phase runs (`npc_actions`), then timers tick (`expired`). If every action was
+player's actions: NPC conditions tick (skipping ones applied this turn), the NPC phase runs
+(`npc_actions`), then player conditions and lights tick (`expired` lists both, in that order). If every action was
 rejected or clarifies, nothing else happens: the turn counter is handed back, no dice are rolled, no NPC
 acts, nothing ticks (`time_passed: false`, `npc_actions: []`, `expired: []`).
 
@@ -246,8 +251,11 @@ The narrator sees none of this as numbers; a `tool_used {key, name}` or `darknes
 
 ### Conditions and durations
 - Player conditions: `character_conditions.duration_turns` (NULL = until removed). NPC conditions:
-  `npc_conditions` (same column). Timed ones tick down by 1 at the end of each turn that spent time; at 0 they
-  are removed and reported in `expired`. One turn ~ one minute; content durations are parsed as
+  `npc_conditions` (same column). Timed player conditions tick down by 1 at the end of each turn that spent
+  time; at 0 they are removed and reported in `expired`. **NPC conditions count the NPC's actions**
+  (v0.5, BUG-R01): they tick after the player's actions and before the NPC phase, and a condition applied
+  this turn doesn't tick until next turn. So a `1 round` blind thrown on turn T stops the NPC's attack on
+  T, still gives advantage to the player's attack on T+1, and expires just before the NPC acts on T+1. One turn ~ one minute; content durations are parsed as
   `N round(s)` = N turns, `N minute(s)` = N turns, `N hour(s)` = 60N turns.
 - `effect.expires_after_check: [abilities/skills]` removes the condition after the first matching check
   or attack -> consequence `condition_removed {name, reason: "spent"}`.
@@ -260,8 +268,8 @@ The narrator sees none of this as numbers; a `tool_used {key, name}` or `darknes
 ### Actions -> state changes
 | action | engine behaviour |
 |---|---|
-| `move` | The target must be an exit from here (a `loc_` key or a direction / `back`) and not locked. With a `skill` (e.g. climbing) a check gates it. Changes: `moved_to_location {key, name}`, and on the first visit `flag_set visited:<loc>`. The engine remembers the previous location for `back` (flag `last_location:<character id>`). |
-| `examine` | `no_check`; with a `skill`, a check. Fixtures and out-of-reach things can be examined. In the dark (`dark && !lit`) only held items and yourself can be examined without a skill (`too_dark`); searching with a skill is allowed, at disadvantage. |
+| `move` | The target must be an exit from here (a `loc_` key or a direction / `back`) and not locked. With a `skill` (e.g. climbing) a check gates it. Changes: `moved_to_location {key, name, dark}` (`dark: true` = arrived somewhere pitch dark; the narrator says so and lists the exits from context), and on the first visit `flag_set visited:<loc>`. The engine remembers the previous location for `back` (flag `last_location:<character id>`). |
+| `examine` | `no_check`; with a `skill`, a check. Fixtures and out-of-reach things can be examined. In the dark (`dark && !lit`) only held items, yourself and **the room itself** (`target` null or the current `loc_`; the result's `target.description` is the darkness text, v0.5) can be examined without a skill; anything else is `too_dark`. Searching with a skill is allowed, at disadvantage. |
 | `talk` | NPC target only. `no_check`; with a social `skill`, a check vs the hinted DC. `dialogue` stays `[]` until dialogue generation is decided. |
 | `skill_check` / `other` (+skill) | A check. On a locked exit / locked item with a lock method (see Tools) success -> `exit_state {key, direction, from: "locked", to: "open"}` (both sides unlocked) or `entity_state {key, field: "state", from: "locked", to: "open"}`. Other skills on a locked exit roll but never unlock it. |
 | `attack` | Check vs the target's defense DC. Ability: unarmed STR; a `finesse` weapon uses the better of STR and DEX; `ammunition` or ranged non-thrown uses DEX; otherwise STR. An improvised (non-weapon) item uses the str/dex hint. + PB if proficient (unarmed always; a weapon if `stats.proficiency` or its template key is in the character's `weapon_proficiencies`; improvised never). No auto-success. On a hit vs an NPC, damage = weapon dice (improvised `1d4`, unarmed `1`) + ability mod, min 1 -> `damage_dealt {target, hp_band}`; at 0 HP `npc_defeated` + `flag_set defeated:<npc>`. A surviving attacked NPC turns hostile -> `npc_disposition_changed {key, to: "hostile"}` (and so counterattacks in the same turn's NPC phase). A hit on an object -> `entity_state {key, field: "state", from, to: "damaged"}`. You attack only with held items. |
@@ -269,7 +277,7 @@ The narrator sees none of this as numbers; a `tool_used {key, name}` or `darknes
 | `drop` | Held item -> `item_removed {key, name, to: <loc key>}`. |
 | `equip` | Held item with a real slot. Conflicting items are unequipped: `main_hand`/`off_hand` conflict with `two_hands`, and the same slot conflicts; `belt` never conflicts. -> `item_unequipped`..., `item_equipped {key, name, slot}`. |
 | `unequip` | -> `item_unequipped {key, name}`. |
-| `use_item` | Held, or a scene item in reach. `stats.check` (e.g. bandages: medicine, easy) is rolled first and nothing is spent on failure. `effect: heal` -> `healed {target: "self", hp_band}` (rejected `already_full` at full HP). `effect: cure_condition` -> `condition_removed {name}`. `effect: buff` -> `condition {name, description, lasting: false, severity: 0}` on the player (see Item effects). `effect: condition` -> NPC save, `npc_condition {key, npc_name, name, outcome: "applied" \| "resisted"}` per NPC, and each NPC hit turns hostile. `effect: light` -> toggles lit/unlit: `entity_state {key, name, field: "state", from, to: "lit" \| "unlit"}` (must be held; not consumed by lighting). `stats.use_sets_flag` -> `flag_set`. `stats.uses` spends one use: `item_used` (uses remain) or `item_consumed` + `item_removed` (used up). A tool used with a `skill` on another target (crowbar on a door) resolves as a `skill_check` (lock tools pick their own skill, see Tools). |
+| `use_item` | Held, or a scene item in reach. `stats.check` (e.g. bandages: medicine, easy) is rolled first and nothing is spent on failure. `effect: heal` -> `healed {target: "self", hp_band}` (rejected `already_full` at full HP). `effect: cure_condition` -> `condition_removed {name}`. `effect: buff` -> `condition {name, description, lasting: false, severity: 0}` on the player (see Item effects). `effect: condition` -> NPC save, `npc_condition {key, npc_name, name, outcome: "applied" \| "resisted"}` per NPC, and each NPC hit turns hostile. `effect: light` -> toggles lit/unlit: `entity_state {key, name, field: "state", from, to: "lit" \| "unlit"}` (must be held; not consumed by lighting). `stats.use_sets_flag` -> `flag_set`. `stats.uses` spends one use: `item_used` (uses remain) or `item_consumed` + `item_removed` (used up; `from: "scene"` when it was used where it lay, not from the pack). A tool used with a `skill` on another target (crowbar on a door) resolves as a `skill_check` (lock tools pick their own skill, see Tools). |
 | `rest` | Not with a hostile NPC present. If a ration (`effect: sustenance`) is held, one is eaten (`item_consumed`/`item_used`) and HP heals **to full**; otherwise heals half the missing HP (rounded up) -> `healed`. Removes non-lasting conditions -> `condition_removed`. Lasting conditions stay. Rations are not required to rest. |
 | `inventory`, `wait` | `no_check`, no changes. |
 
@@ -471,6 +479,10 @@ falls back to indirect speech).
 5. Persona `combat` blocks set NPC combat stats at seed. Item names may not contain digits (load-time
    check). `improvised_pick` items pick locks at DC 25 (or the authored DC if higher); bare hands stay
    `needs_tool`. `stats.condition_effect` drives tonic/flash powder.
+6. Retest fixes (`playtest/2026-11-10-retest-da16509.md`): NPC conditions tick before the NPC phase and skip
+   the turn they're applied (R01); `moved_to_location.dark`, looking around in the dark resolves (R02);
+   context `felt_items` (R03); bare talk targets the only NPC here or clarifies (R04); new rejection details
+   `needs_target` / `no_effect` (R05); `item_removed.from: "scene"` (R06).
 
 ## Changes since v0.3
 1. New top-level `npc_actions`, `expired`, `time_passed`. `defeat` is now `{"type": "death"}` (was `knocked_out`); a defeat narration has no closing line.
