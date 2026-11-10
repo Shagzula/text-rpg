@@ -100,11 +100,12 @@ VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("equip", "wield", "wear", "ready", "draw"), "equip"),
     (("unequip", "remove", "sheathe", "unwield"), "unequip"),
     (("attack", "hit", "stab", "strike", "kill", "punch", "slash", "fight"), "attack"),
-    (("use", "drink", "pull", "push", "apply", "light", "eat"), "use_item"),
+    (("use", "drink", "pull", "push", "apply", "light", "eat", "throw", "toss"), "use_item"),
     (("pick", "unlock", "lockpick"), "pick"),
     (("open", "force", "kick", "break", "smash", "bash", "shove"), "force"),
     (("talk", "speak", "ask", "greet", "chat"), "talk"),
 ]
+KEY_PREFIXES = {"item", "npc", "loc", "pc"}  # slug prefixes are not words to match on (BUG-14)
 OOC_WORDS = {"quit": "quit", "exit": "quit", "save": "save", "load": "load", "help": "help",
              "stats": "stats", "undo": "undo"}
 
@@ -132,7 +133,8 @@ class MockLLM:
 
     # -- interpreter ----------------------------------------------------------
     def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
-        text = " ".join(player_text.strip().lower().split())
+        # drop emoji and other symbols (BUG-13); keep letters, digits and light punctuation
+        text = " ".join(re.sub(r"[^\w\s'.,!?;-]", " ", player_text).strip().lower().split())
         last_ditch = False
         for p in LAST_DITCH_PHRASES:
             if p in text:
@@ -201,16 +203,20 @@ class MockLLM:
             action.update(action_type="attack", skill="str", intent_summary=f"Attack the {rest}.")
         elif verb == "use_item":
             item_txt, _, on_txt = rest.partition(" on ")
+            if not on_txt and " at " in rest:
+                item_txt = rest.partition(" at ")[0]
             key, amb = self._match(item_txt, context, ("inv", "item"), "item")
             if amb:
                 self._apply_target(action, None, amb, item_txt, refs)
             else:
                 action["items_used"] = [key]
+            on_txt = on_txt or (rest.partition(" at ")[2])  # "throw powder at guard"
             if on_txt:
-                tkey, tamb = self._match(on_txt, context, ("exit", "npc", "item"), "item")
+                tkey, tamb = self._door_target(on_txt, context, ("exit", "npc", "item"))
                 self._apply_target(action, tkey, tamb, on_txt, refs)
                 if any(e["to"] == tkey for e in (context.get("location") or {}).get("exits", [])):
-                    action["skill"] = "athletics"  # prying/forcing a door with a tool
+                    # lockpicks pick, anything else pries (the engine decides from the tool's stats)
+                    action["skill"] = "sleight_of_hand" if "lock" in item_txt else "athletics"
             elif key in {i["key"] for i in context.get("visible_items", [])}:
                 action["target"] = key  # a fixture or scene object
             else:
@@ -220,15 +226,10 @@ class MockLLM:
             for junk in ("the lock on ", "lock on ", "the lock of ", "lock of ", "open "):
                 if rest.startswith(junk):
                     rest = _strip_articles(rest[len(junk):])
-            key, amb = self._match(rest or "door", context, ("exit", "item"), "loc")
-            locked = {e["to"] for e in (context.get("location") or {}).get("exits", []) if e["state"] == "locked"}
-            if amb and len(set(amb) & locked) == 1:  # "the door" = the locked one
-                key, amb = (set(amb) & locked).pop(), []
-            known = {k for k, _ in self._candidates(context, ("exit", "item"))}
-            if not amb and key not in known and len(locked) == 1:  # "pick the lock"
-                key = next(iter(locked))
-                rest = next(e.get("description") or e["to_name"] for e in context["location"]["exits"]
-                            if e["to"] == key)
+            key, amb = self._door_target(rest or "door", context, ("exit", "item"))
+            exits = (context.get("location") or {}).get("exits", [])
+            if not rest or rest in ("lock", "door", "the lock", "the door"):
+                rest = next((e.get("description") or e["to_name"] for e in exits if e["to"] == key), rest)
             self._apply_target(action, key, amb, rest or "door", refs)
             skill = "sleight_of_hand" if verb == "pick" else "athletics"
             action.update(action_type="skill_check", skill=skill,
@@ -240,6 +241,20 @@ class MockLLM:
         if last_ditch:
             action["intent_summary"] = action["intent_summary"].rstrip(".") + ", desperately, whatever it costs."
         return {"actions": [action], "ooc": None, "unresolved_references": refs}
+
+    def _door_target(self, phrase: str, context: Dict, pools):
+        """Match a door-ish phrase; "the door"/"the lock" prefers the one locked exit, then
+        the one lockable exit (BUG-06/12)."""
+        key, amb = self._match(phrase, context, pools, "loc")
+        exits = (context.get("location") or {}).get("exits", [])
+        for pick in ({e["to"] for e in exits if e["state"] == "locked"},
+                     {e["to"] for e in exits if e.get("lockable")}):
+            if amb and len(set(amb) & pick) == 1:
+                return (set(amb) & pick).pop(), []
+            known = {k for k, _ in self._candidates(context, pools)}
+            if not amb and key not in known and len(pick) == 1 and _words(phrase) <= {"lock", "door", "it"}:
+                return next(iter(pick)), []
+        return key, amb
 
     @staticmethod
     def _split_verb(text: str):
@@ -273,7 +288,7 @@ class MockLLM:
             return None, []
         scored = []
         for key, name in self._candidates(context, pools):
-            score = len(want & (_words(name) | _words(key.replace("_", " "))))
+            score = len(want & (_words(name) | (_words(key.replace("_", " ")) - KEY_PREFIXES)))
             if score:
                 scored.append((score, key))
         if not scored:
@@ -289,7 +304,8 @@ class MockLLM:
         if ambiguous:
             refs.append(phrase)
             action["clarification_needed"] = True
-            action["clarification_question"] = f"Which {phrase} do you mean?"
+            noun = (re.findall(r"[a-z0-9]+", phrase.lower()) or ["one"])[-1]
+            action["clarification_question"] = f"Which {noun} do you mean?"
         else:
             action["target"] = key
 
@@ -440,7 +456,7 @@ class MockLLM:
     @staticmethod
     def _consequence_text(c: Dict, context: Dict) -> str:
         t = c["type"]
-        if t == "condition" and c.get("severity") == "minor" and not c.get("lasting"):
+        if t == "condition" and c.get("severity") == 0 and not c.get("lasting"):  # a buff
             return f"You feel {c.get('name')}."
         if t == "condition":
             d = c.get("description") or "You are hurt"

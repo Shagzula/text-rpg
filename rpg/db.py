@@ -168,7 +168,33 @@ def get_flag(conn, key: str, default=None):
     return default if row is None else json.loads(row["value"])
 
 
+def _stronger(a, b):
+    """Merge two condition effects without stacking: per key the larger magnitude wins."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return {k: _stronger(a.get(k), b.get(k)) if k in a and k in b else (a[k] if k in a else b[k])
+                for k in {**a, **b}}
+    if isinstance(a, list) and isinstance(b, list):
+        return a + [x for x in b if x not in a]
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a if abs(a) >= abs(b) else b
+    return b if a is None else a
+
+
 def add_condition(conn, character_id: int, cond: Condition) -> int:
+    """Add a condition. Re-applying one the character already has (same name) does not
+    stack (BUG-07): the existing row is kept and refreshed -- stronger effect per key,
+    higher severity, lasting if either is, the longer duration (NULL = indefinite)."""
+    old = conn.execute("SELECT * FROM character_conditions WHERE character_id = ? AND name = ? ORDER BY id LIMIT 1",
+                       (character_id, cond.name)).fetchone()
+    if old is not None:
+        sev = max(int(old["severity"] or 0), int(cond.severity or 0))
+        dur = None if old["duration_turns"] is None or cond.duration_turns is None \
+            else max(old["duration_turns"], cond.duration_turns)
+        conn.execute("UPDATE character_conditions SET effect = ?, severity = ?, lasting = ?, duration_turns = ?, "
+                     "description = COALESCE(?, description) WHERE id = ?",
+                     (json.dumps(_stronger(json.loads(old["effect"] or "{}"), cond.effect)), sev,
+                      int(bool(old["lasting"]) or cond.lasting), dur, cond.description, old["id"]))
+        return old["id"]
     cur = conn.execute(
         """INSERT INTO character_conditions
            (character_id, name, description, severity, effect, lasting, duration_turns, source)

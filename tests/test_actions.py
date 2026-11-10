@@ -288,7 +288,7 @@ def test_rejection_affects_only_that_action(world):
     (act("take", target="item_long_blade"), "target_not_present"),
     (act("use_item", items_used=["item_shelf_antidote"]), "out_of_reach"),
     (act("attack", target="npc_archer", items_used=["item_rusty_shortsword"]), "out_of_reach"),
-    (act("attack", target="npc_tall_guard", items_used=["item_hanging_lamp"]), "item_unusable"),
+    (act("attack", target="npc_tall_guard", items_used=["item_hanging_lamp"]), "item_not_owned"),  # not held
     (act("attack", target="self"), "impossible_action"),
     (act("talk", target="item_hanging_lamp"), "impossible_action"),
     (act("other", intent="Cast fireball at the guard.", est_difficulty="near_impossible",

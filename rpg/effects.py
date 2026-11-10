@@ -130,10 +130,10 @@ def apply_buff(conn, character_id, item: Dict) -> Dict:
     turns = rules.duration_turns(s.get("duration"))
     conn.execute("DELETE FROM character_conditions WHERE character_id = ? AND name = ?", (character_id, spec["name"]))
     conn.execute("INSERT INTO character_conditions (character_id, name, description, severity, effect, lasting, "
-                 "duration_turns, source) VALUES (?, ?, ?, 'minor', ?, 0, ?, ?)",
+                 "duration_turns, source) VALUES (?, ?, ?, 0, ?, 0, ?, ?)",
                  (character_id, spec["name"], desc, json.dumps(spec["effect"]), turns, item["key"]))
     return {"type": "condition", "target": "self", "name": spec["name"], "description": desc,
-            "lasting": False, "severity": "minor"}
+            "lasting": False, "severity": 0}
 
 
 def expire_after_check(conn, character_id, skill: Optional[str], ability: str) -> List[Dict]:

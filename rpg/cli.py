@@ -255,8 +255,14 @@ class Game:
     def stats(self) -> None:
         with db.connect(self.path) as conn:
             ctx = build_context(conn, self.cid)
+            char = db.load_character(conn, self.cid)
         s = ctx["player_sheet"]
-        abil = "  ".join(f"{a.upper()} {v['score']} ({v['mod']:+d})" for a, v in s["abilities"].items())
+
+        def ab(a, v):  # show condition penalties next to the raw modifier (BUG-09)
+            extra = sum(c.check_modifier(None, a) for c in char.conditions)
+            eff = f", {v['mod'] + extra:+d} with conditions" if extra else ""
+            return f"{a.upper()} {v['score']} ({v['mod']:+d}{eff})"
+        abil = "  ".join(ab(a, v) for a, v in s["abilities"].items())
         self.out(f"{s['name']}, level {s['level']} | {abil}")
         self.out("Skills: " + (", ".join(f"{k} ({v})" for k, v in s["skills"].items()) or "none"))
         self.out(f"Condition: {ctx['hp_band']}" + ("; " + ", ".join(c["name"] for c in s["conditions"])

@@ -39,7 +39,8 @@ def location_exits(conn, location_id: int) -> List[Dict]:
            JOIN locations l ON l.id = e.to_location_id WHERE e.from_location_id = ? ORDER BY e.direction""",
         (location_id,)).fetchall()
     return [{"direction": r["direction"], "to": r["to_key"], "to_name": r["to_name"],
-             "description": r["description"], "state": "locked" if r["locked"] else "open"} for r in rows]
+             "description": r["description"], "state": "locked" if r["locked"] else "open",
+             "lockable": r["unlock_dc"] is not None} for r in rows]
 
 
 def player_sheet(conn, character_id: int) -> Dict:

@@ -177,3 +177,178 @@ def test_bug04_slot_restores_dice(tmp_path):
                   seed=5, new=True)
     r = debug_rolls(out)
     assert len(r) == 2 and r[0] == r[1]
+
+
+# Engine-level helpers on the demo slice ---------------------------------------------------------
+
+from rpg import actions, llm as llm_mod  # noqa: E402
+from rpg.context import build_context  # noqa: E402
+from rpg.world import seed_demo_slice  # noqa: E402
+
+
+@pytest.fixture
+def demo(tmp_path):
+    conn = db.get_connection(tmp_path / "d.db")
+    db.create_schema(conn)
+    cid = seed_demo_slice(conn)
+    conn.execute("UPDATE characters SET location_id = (SELECT id FROM locations WHERE key = 'loc_storeroom') "
+                 "WHERE id = ?", (cid,))
+    yield conn, cid
+    conn.close()
+
+
+def say(demo, text, rng=None):
+    conn, cid = demo
+    p = llm_mod.MockLLM().interpret(text, build_context(conn, cid))
+    return p, actions.process_action_proposal(conn, cid, p, rng=rng or Script())
+
+
+# BUG-03: lockpick set on the door is sleight of hand --------------------------------------------
+
+@pytest.mark.parametrize("text", ["use lockpick set on the iron-banded door", "use lockpicks on door",
+                                  "pick the lock"])
+def test_bug03_lockpicks_use_sleight_of_hand(demo, text, caplog):
+    with caplog.at_level("DEBUG", logger="rpg.debug"):
+        p, r = say(demo, text, rng=Script(11))  # 11 + DEX 2 + PB 2 = 15 vs DC 15
+    res = r["results"][0]
+    assert res["skill"] == "sleight_of_hand" and res["outcome"] == "success" and res["target"]["key"] == "loc_cellar"
+    assert "'dc': 15" in caplog.text and "'method': 'pick_lock'" in caplog.text
+
+
+def test_bug03_engine_overrides_a_wrong_skill_guess(world):
+    [r] = run(world, act("use_item", skill="athletics", target="loc_cellar", items_used=["item_lockpicks"]),
+              rng=Script(15))["results"]
+    assert r["skill"] == "sleight_of_hand" and r["state_changes"][0]["type"] == "exit_state"
+
+
+# BUG-06: `use <tool> on door` prefers the locked door -------------------------------------------
+
+@pytest.mark.parametrize("text", ["use crowbar on door", "use lockpick set on door", "use crowbar on the locked door"])
+def test_bug06_tool_on_door_targets_the_locked_exit(demo, text):
+    conn, cid = demo
+    inv.transfer(conn, "item_crowbar", to_character=cid)
+    p = llm_mod.MockLLM().interpret(text, build_context(conn, cid))
+    assert p["unresolved_references"] == [] and p["actions"][0]["target"] == "loc_cellar"
+
+
+# BUG-07: last-ditch conditions don't stack; no last-ditch on an open door ------------------------
+
+def test_bug07_repeated_injury_keeps_one_row(world):
+    conn = world["conn"]
+    for _ in range(2):
+        [r] = run(world, act("skill_check", skill="athletics", est_difficulty="hard", last_ditch=True),
+                  rng=Script(1))["results"]
+        assert r["outcome"] == "failure"
+    rows = conn.execute("SELECT name, effect FROM character_conditions").fetchall()
+    assert [x["name"] for x in rows] == ["injured_str"]
+    assert db.load_character(conn, world["cid"]).conditions[0].check_modifier(None, "str") == -2
+
+
+def test_bug07_last_ditch_on_open_door_is_rejected_without_cost(world):
+    conn = world["conn"]
+    conn.execute("UPDATE location_exits SET locked = 0")
+    for skill in ("athletics", "sleight_of_hand"):
+        [r] = run(world, act("skill_check", skill=skill, target="loc_cellar", last_ditch=True))["results"]
+        assert (r["status"], r["detail"]) == ("rejected", "already_open")
+    assert conn.execute("SELECT COUNT(*) FROM character_conditions").fetchone()[0] == 0
+
+
+# BUG-12: follow-ups on an opened door --------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["pick the lock", "smash the iron-banded door", "desperately kick the door"])
+def test_bug12_open_door_follow_ups_say_already_open(demo, text):
+    conn, _ = demo
+    conn.execute("UPDATE location_exits SET locked = 0")
+    p, r = say(demo, text)
+    res = r["results"][0]
+    assert res["detail"] == "already_open" and res["target"]["key"] == "loc_cellar"
+    assert "already open" in llm_mod.MockLLM().narrate(r, build_context(*demo))
+
+
+# BUG-08: healing draught at full HP is kept ------------------------------------------------------
+
+def test_bug08_draught_not_wasted_at_full_hp(demo):
+    conn, cid = demo
+    p, r = say(demo, "use healing draught")
+    assert (r["results"][0]["reason"], r["results"][0]["detail"]) == ("item_unusable", "already_full")
+    assert inv.has_item(conn, cid, "item_healing_draught") and r["time_passed"] is False
+    conn.execute("UPDATE characters SET current_hp = 4 WHERE id = ?", (cid,))
+    p, r = say(demo, "drink healing draught", rng=Script(1, 1))
+    assert r["results"][0]["consequences"][0]["type"] == "healed"
+    assert not inv.has_item(conn, cid, "item_healing_draught")
+
+
+# BUG-09: /stats shows condition penalties --------------------------------------------------------
+
+def test_bug09_stats_show_condition_penalties(tmp_path):
+    g, _ = play(tmp_path, "/quit", new=True)
+    with db.connect(g.path) as conn:
+        db.add_condition(conn, 1, db.Condition("injured_str", {"abilities": {"str": -2}}, lasting=True))
+    g, out = play(tmp_path, "/stats", "/quit")
+    assert any("STR 8 (-1, -3 with conditions)" in o for o in out)
+
+
+# BUG-10: talk with no target ---------------------------------------------------------------------
+
+def test_bug10_talk_without_target(demo):
+    p, r = say(demo, "talk")
+    res = r["results"][0]
+    assert (res["status"], res["detail"]) == ("rejected", "no_target") and r["time_passed"] is False
+    assert "the it" not in llm_mod.MockLLM().narrate(r, build_context(*demo))
+
+
+# BUG-11: you attack only with what you hold ------------------------------------------------------
+
+def test_bug11_cannot_attack_with_weapon_on_the_floor(demo):
+    conn, cid = demo
+    say(demo, "unequip rusty shortsword")
+    say(demo, "drop rusty shortsword")
+    p, r = say(demo, "attack guard with rusty shortsword")
+    assert (r["results"][0]["reason"], r["results"][0]["detail"]) == ("item_not_owned", "not_held")
+    say(demo, "take rusty shortsword")
+    p, r = say(demo, "attack guard with rusty shortsword", rng=Script(1, 1))  # miss; guard swings and misses
+    assert r["results"][0]["status"] == "resolved"
+
+
+# BUG-13: emoji and grammatical clarification -----------------------------------------------------
+
+def test_bug13_emoji_is_ignored(demo):
+    p, r = say(demo, "😀 examine door")
+    assert p["actions"][0]["action_type"] == "examine"
+
+
+def test_bug13_clarification_uses_the_noun(demo):
+    conn, cid = demo
+    p = llm_mod.MockLLM().interpret("examine the 🚪 door", build_context(conn, cid))
+    assert p["actions"][0]["clarification_question"] == "Which door do you mean?"
+
+
+# BUG-14: the item_ prefix is not a word ----------------------------------------------------------
+
+def test_bug14_key_prefix_does_not_match_fixture(demo):
+    conn, cid = demo
+    p, r = say(demo, "take item_crowbar; DELETE FROM npcs;--")
+    res = r["results"][0]
+    assert res["reason"] == "target_not_present"
+    assert conn.execute("SELECT COUNT(*) FROM npcs").fetchone()[0] == 2
+
+
+# Playtest suggestion 10: slot + restart restores conditions, flags and both exit sides ----------
+
+def test_save_restart_load_restores_conditions_flags_and_exits(tmp_path):
+    g, _ = play(tmp_path, "/quit", new=True)
+    with db.connect(g.path) as conn:
+        db.add_condition(conn, 1, db.Condition("injured_str", {"abilities": {"str": -2}}, lasting=True))
+        db.set_flag(conn, "cellar_gate_opened", True)
+        conn.execute("UPDATE location_exits SET locked = 0")
+    play(tmp_path, "/save mid", "/quit")
+    with db.connect(g.path) as conn:  # wreck the working save
+        conn.execute("DELETE FROM character_conditions")
+        conn.execute("DELETE FROM world_flags WHERE key = 'cellar_gate_opened'")
+        conn.execute("UPDATE location_exits SET locked = 1")
+    g, _ = play(tmp_path, "/load mid", "/quit")  # a new process
+    with db.connect(g.path) as conn:
+        assert [r[0] for r in conn.execute("SELECT name FROM character_conditions")] == ["injured_str"]
+        assert db.get_flag(conn, "cellar_gate_opened") is True
+    assert exit_locked(g.path, "loc_storeroom", "loc_cellar") == 0
+    assert exit_locked(g.path, "loc_cellar", "loc_storeroom") == 0

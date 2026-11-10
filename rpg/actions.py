@@ -38,7 +38,8 @@ DIRECTION_ALIASES = {"n": "north", "s": "south", "e": "east", "w": "west", "u": 
 BACK = "back"  # the exit leading to where you came from
 # Ways to get through something locked (an exit, or an item whose state is 'locked').
 LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
-TOOL_REQUIRED_METHODS = ("pick_lock",)  # impossible without a tool that enables it
+TOOL_REQUIRED_METHODS = ("pick_lock",)
+TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_open"))  # impossible without a tool that enables it
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
 DEATH_DESCRIPTION = "Your wounds overcome you, and you fall."
 
@@ -409,6 +410,8 @@ class Turn:
         return self.result(a, target=t, check=check, state_changes=changes)
 
     def do_talk(self, a, t):
+        if t is None:
+            raise Reject("target_not_present", "no_target")  # BUG-10
         if t is not None:
             if t.kind != "npc":
                 raise Reject("impossible_action", "not_a_creature")
@@ -423,6 +426,9 @@ class Turn:
             self.item(k)
         locked = t is not None and ((t.kind == "exit" and t.row["locked"]) or
                                     (t.kind == "item" and t.row.get("state") == "locked"))
+        if not locked and t is not None and t.kind == "exit" and a["skill"] in LOCK_METHODS:
+            # picking/forcing an open way: nothing to roll for, no last-ditch cost (BUG-07/12)
+            raise Reject("impossible_action", "already_open")
         method = LOCK_METHODS.get(a["skill"]) if locked else None
         dc = self.dc_for(a, t)
         if method:
@@ -561,6 +567,13 @@ class Turn:
             self.item(k)
         stats = item["stats"]
         effect = stats.get("effect")
+        # A lock tool on a way through: the tool decides the skill (lockpicks -> sleight of
+        # hand, crowbar -> athletics), whatever the interpreter guessed (BUG-03).
+        enables = stats.get("enables") or []
+        if t is not None and t.kind in ("exit", "item") and t.key != item["key"]:
+            skill = next((sk for sk, m in TOOL_METHOD_SKILLS if m in enables), None)
+            if skill:
+                return self.do_skill_check({**a, "skill": skill}, t)
         # A tool on something (crowbar on a door) with a skill is a skill check.
         if a["skill"] and effect not in ("heal", "cure_condition", "condition") and not (t and t.key == item["key"]):
             return self.do_skill_check(a, t)
@@ -579,6 +592,8 @@ class Turn:
             if not check.success:
                 return self.result(a, target=t, check=check)
         cons, changes = [], []
+        if effect == "heal" and self.char_row["current_hp"] >= self.char_row["max_hp"]:
+            raise Reject("item_unusable", "already_full")  # don't waste it (BUG-08)
         if effect == "heal":
             ch = self.char_row
             new = min(ch["max_hp"], ch["current_hp"] + max(0, rules.roll_dice(stats.get("amount", "1"), self.rng)))
@@ -648,12 +663,8 @@ class Turn:
         if a["items_used"]:
             weapon = inv.get_item(self.conn, a["items_used"][0])
             if weapon["character_id"] != self.cid:
-                if weapon["location_id"] != self.loc_id:
-                    raise Reject("item_not_owned")
-                if weapon["fixture"]:
-                    raise Reject("item_unusable", "fixture")
-                if weapon["out_of_reach"]:
-                    raise Reject("out_of_reach")
+                # you attack with what you hold; pick it up first (BUG-11)
+                raise Reject("item_not_owned", "not_held")
             improvised = weapon["category"] != "weapon"
         stats = weapon["stats"] if weapon else {}
         props = stats.get("properties") or []
