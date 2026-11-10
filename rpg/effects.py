@@ -153,12 +153,21 @@ def npc_conditions(conn, npc_id) -> List[str]:
     return [r["name"] for r in conn.execute("SELECT name FROM npc_conditions WHERE npc_id = ? ORDER BY id", (npc_id,))]
 
 
+INCAPACITATION_FLAGS = ("no_attack", "prevents_actions", "incapacitated")
+
+
+def effect_incapacitates(name: str, eff: Optional[Dict]) -> bool:
+    """Driven by the condition's effect spec: any of INCAPACITATION_FLAGS true. The
+    hard-coded INCAPACITATING name list is only a fallback for conditions with no spec."""
+    if eff:
+        return any(bool(eff.get(f)) for f in INCAPACITATION_FLAGS)
+    return name in INCAPACITATING
+
+
 def npc_incapacitated(conn, npc_id) -> Optional[str]:
-    """Name of a condition that stops this NPC attacking: effect.no_attack, or (no explicit
-    flag) a name in INCAPACITATING."""
+    """Name of a condition that stops this NPC acting this turn, else None."""
     for r in conn.execute("SELECT name, effect FROM npc_conditions WHERE npc_id = ? ORDER BY id", (npc_id,)):
-        eff = json.loads(r["effect"] or "{}")
-        if eff.get("no_attack", r["name"] in INCAPACITATING):
+        if effect_incapacitates(r["name"], json.loads(r["effect"] or "{}")):
             return r["name"]
     return None
 
@@ -168,7 +177,7 @@ def npc_condition_effect(item: Dict, name: str) -> Dict:
     eff = item["stats"].get("condition_effect")
     if isinstance(eff, dict):
         return dict(eff)
-    return {"no_attack": name in INCAPACITATING}
+    return {}  # no spec: npc_incapacitated falls back to the INCAPACITATING name list
 
 
 def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: int) -> Dict:
