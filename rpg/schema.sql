@@ -1,4 +1,4 @@
--- Text RPG engine schema (v2). All authoritative game state lives here.
+-- Text RPG engine schema (v3). All authoritative game state lives here.
 -- Extends the starter rpg_engine.py schema: same table/column names where they
 -- existed, plus FKs, CHECKs, JSON columns and the tables the design doc needs.
 -- JSON columns are TEXT validated with json_valid(). Foreign keys are enforced
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS locations (
     name        TEXT NOT NULL,
     description TEXT,
     area_tier   INTEGER NOT NULL DEFAULT 1 CHECK (area_tier >= 1),   -- power tier
+    dark        INTEGER NOT NULL DEFAULT 0 CHECK (dark IN (0, 1)),   -- needs a lit light source to see
     parent_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL, -- e.g. room -> dungeon
     faction_id  INTEGER REFERENCES factions(id) ON DELETE SET NULL
 );
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS items (
     quantity     INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
     equipped     INTEGER NOT NULL DEFAULT 0 CHECK (equipped IN (0, 1)),
     uses_left    INTEGER,                       -- NULL = full (template stats.uses)
+    timer        INTEGER,                       -- turns left on a timed state (e.g. a lit light)
     state        TEXT,                          -- free-form entity state: 'sealed', 'open', 'struck'
     out_of_reach INTEGER NOT NULL DEFAULT 0 CHECK (out_of_reach IN (0, 1)),
     notes        TEXT,
@@ -140,6 +142,9 @@ CREATE TABLE IF NOT EXISTS npcs (
     traits      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(traits)),
     disposition INTEGER NOT NULL DEFAULT 0 CHECK (disposition BETWEEN -100 AND 100),
     defense_dc  INTEGER NOT NULL DEFAULT 10,    -- attack DC (AC-like)
+    attack_bonus INTEGER NOT NULL DEFAULT 2,    -- its d20 bonus when attacking
+    damage      TEXT NOT NULL DEFAULT '1d4',    -- its damage dice
+    save_bonus  INTEGER NOT NULL DEFAULT 0,     -- its d20 bonus on saves
     max_hp      INTEGER NOT NULL DEFAULT 4 CHECK (max_hp > 0),
     current_hp  INTEGER,                        -- NULL = max_hp
     out_of_reach INTEGER NOT NULL DEFAULT 0 CHECK (out_of_reach IN (0, 1)),
@@ -173,6 +178,17 @@ CREATE TABLE IF NOT EXISTS save_games (
     turn         INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Conditions on NPCs (blinded by flash powder, ...). duration_turns NULL = until removed.
+CREATE TABLE IF NOT EXISTS npc_conditions (
+    id             INTEGER PRIMARY KEY,
+    npc_id         INTEGER NOT NULL REFERENCES npcs(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL,
+    effect         TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(effect)),
+    duration_turns INTEGER,
+    source         TEXT,
+    created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Narrator output per turn, for the {recent_narrations} context block.

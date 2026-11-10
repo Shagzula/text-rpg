@@ -19,7 +19,7 @@ def test_schema_created_with_version(path):
     with db.connect(path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert EXPECTED_TABLES <= tables
-        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "2"
+        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "3"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     db.init_db(path)  # idempotent
 
@@ -156,3 +156,37 @@ def test_subcategory_accepted_inside_or_outside_stats(path):
         for k in ("item_a", "item_b"):
             stats = json.loads(conn.execute("SELECT stats FROM item_templates WHERE key=?", (k,)).fetchone()[0])
             assert stats == {"subcategory": "lever"}
+
+
+V2_SNIPPET = """
+CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO schema_meta VALUES ('schema_version', '2');
+CREATE TABLE locations (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
+    area_tier INTEGER NOT NULL DEFAULT 1, parent_id INTEGER, faction_id INTEGER);
+INSERT INTO locations (key, name) VALUES ('loc_old', 'Old');
+CREATE TABLE items (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, template_id INTEGER NOT NULL,
+    character_id INTEGER, location_id INTEGER, display_name TEXT, quantity INTEGER NOT NULL DEFAULT 1,
+    equipped INTEGER NOT NULL DEFAULT 0, uses_left INTEGER, state TEXT, out_of_reach INTEGER NOT NULL DEFAULT 0,
+    notes TEXT, acquired_at TEXT);
+CREATE TABLE npcs (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
+    location_id INTEGER, faction_id INTEGER, traits TEXT NOT NULL DEFAULT '[]', disposition INTEGER NOT NULL DEFAULT 0,
+    defense_dc INTEGER NOT NULL DEFAULT 10, max_hp INTEGER NOT NULL DEFAULT 4, current_hp INTEGER,
+    out_of_reach INTEGER NOT NULL DEFAULT 0, is_major INTEGER NOT NULL DEFAULT 0, alive INTEGER NOT NULL DEFAULT 1,
+    notes TEXT);
+INSERT INTO npcs (key, name) VALUES ('npc_old', 'Old Guard');
+"""
+
+
+def test_v2_save_migrates_to_v3(tmp_path):
+    p = tmp_path / "v2.db"
+    c = sqlite3.connect(p)
+    c.executescript(V2_SNIPPET)
+    c.close()
+    db.init_db(p)
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT value FROM schema_meta").fetchone()[0] == "3"
+        assert conn.execute("SELECT dark FROM locations").fetchone()[0] == 0
+        n = conn.execute("SELECT attack_bonus, damage, save_bonus FROM npcs").fetchone()
+        assert tuple(n) == (2, "1d4", 0)
+        assert "timer" in {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+        assert conn.execute("SELECT COUNT(*) FROM npc_conditions").fetchone()[0] == 0

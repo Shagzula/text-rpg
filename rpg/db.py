@@ -11,7 +11,16 @@ from typing import Dict, Iterator, Optional, Union
 
 from .rules import ABILITIES, Character, CheckResult, Condition, normalize_skill
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Columns added after v2; older saves get them via ALTER TABLE on open.
+MIGRATION_COLUMNS = [
+    ("locations", "dark", "INTEGER NOT NULL DEFAULT 0"),
+    ("items", "timer", "INTEGER"),
+    ("npcs", "attack_bonus", "INTEGER NOT NULL DEFAULT 2"),
+    ("npcs", "damage", "TEXT NOT NULL DEFAULT '1d4'"),
+    ("npcs", "save_bonus", "INTEGER NOT NULL DEFAULT 0"),
+]
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PathLike = Union[str, os.PathLike]
@@ -62,9 +71,20 @@ def create_schema(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+    elif int(row[0]) == 2:
+        _migrate_v2(conn)
     elif int(row[0]) != SCHEMA_VERSION:
         raise RuntimeError(f"Unsupported schema_version {row[0]} (expected {SCHEMA_VERSION})")
     conn.commit()
+
+
+def _migrate_v2(conn) -> None:
+    """v2 -> v3: new tables come from the schema script; add the new columns."""
+    for table, col, ddl in MIGRATION_COLUMNS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    conn.execute("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
 
 
 def init_db(path: Optional[PathLike] = None) -> Path:
