@@ -139,7 +139,7 @@ def test_clarification_needed_mid_turn(world):
 # --- trivial actions / no_check ------------------------------------------------------
 
 @pytest.mark.parametrize("a", [act("inventory"), act("wait"), act("examine", target="item_hanging_lamp"),
-                               act("talk", target="npc_tall_guard"), act("other", intent="Hum a tune.")])
+                               act("talk", target="npc_tall_guard")])
 def test_no_check_actions(world, a):
     [r] = run(world, a)["results"]
     assert (r["status"], r["outcome"], r["reason"], r["degree"]) == ("resolved", "success", "no_check", None)
@@ -303,8 +303,9 @@ def test_validation_codes(world, a, code):
     assert (r["status"], r["outcome"], r["reason"], r["degree"]) == ("rejected", "failure", code, None)
     assert r["state_changes"] == [] and r["consequences"] == []
     assert code in actions.VALIDATION_CODES
-    # only the turn counter row changed
-    assert world["conn"].total_changes - before <= 1
+    # nothing changed: the turn counter was bumped and handed back (no turn spent)
+    assert world["conn"].total_changes - before <= 2
+    assert world["conn"].execute("SELECT turn FROM save_games").fetchone()[0] == 0
 
 
 def test_other_with_near_impossible_but_skill_still_rolls(world):

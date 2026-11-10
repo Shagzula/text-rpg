@@ -142,7 +142,7 @@ class MockLLM:
             if direction is None and raw and raw[0] in ("in", "out") and len(raw) == 1:
                 direction = raw[0]
         action = {"action_type": "other", "skill": None, "target": None, "items_used": [], "last_ditch": last_ditch,
-                  "est_difficulty": "medium", "intent_summary": f"Try to {text.rstrip('.')}.",
+                  "est_difficulty": "medium", "intent_summary": f"Try to {text[:80].rstrip('.')}.",
                   "clarification_needed": False, "clarification_question": None}
         refs: List[str] = []
         if verb in ("inventory", "rest", "wait"):
@@ -327,6 +327,7 @@ class MockLLM:
         "enemies_present": "Not with enemies this close.",
         "target_defeated": "There's no fight left in them.",
         "lacks_ability": "You have no such power.",
+        "unrecognized": "Nothing happens. That isn't something you can do here.",
         "already_here": "You're already here.",
     }
     DEGREE_WORD = {"narrow": "Just barely, ", "clear": "", "overwhelming": "Easily, ", None: ""}

@@ -326,8 +326,10 @@ class Turn:
     def resolve(self, a) -> Dict:
         t, target_error = None, None
         try:
-            if a["action_type"] == "other" and a["skill"] is None and a["est_difficulty"] == "near_impossible":
-                raise Reject("impossible_action", "lacks_ability")
+            if a["action_type"] == "other" and a["skill"] is None:
+                # Nothing the engine can model: never a free success (BUG-02).
+                raise Reject("impossible_action",
+                             "lacks_ability" if a["est_difficulty"] == "near_impossible" else "unrecognized")
             handler = getattr(self, "do_" + a["action_type"])
             if a["action_type"] in ("take", "drop", "equip", "unequip"):
                 return handler(a)  # item actions: the item is the target
@@ -729,6 +731,12 @@ def _next_turn(conn, character_id: int) -> int:
     return row["turn"] + 1
 
 
+def _undo_turn(conn, character_id: int) -> None:
+    """Nothing resolved (all rejected / clarify): the turn is not spent."""
+    conn.execute("UPDATE save_games SET turn = turn - 1 WHERE id = (SELECT id FROM save_games "
+                 "WHERE character_id = ? ORDER BY id LIMIT 1)", (character_id,))
+
+
 def _refs(a) -> set:
     return ({a["target"]} | set(a["items_used"])) - {None, "self"}
 
@@ -766,7 +774,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     rng = rng or random.Random()
     if conn.execute("SELECT current_hp FROM characters WHERE id = ?", (character_id,)).fetchone()[0] <= 0:
         return {"turn": None, "results": [], "player_status": player_status(conn, character_id), "dialogue": [],
-                "npc_actions": [], "expired": [], "defeat": death(), "clarification_question": None}
+                "npc_actions": [], "expired": [], "defeat": death(), "clarification_question": None,
+                "time_passed": False}
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     actions = prop["actions"]
     results: List[Dict] = []
@@ -800,13 +809,18 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     expired: List[Dict] = []
     # Time passes (NPCs act, timers tick) only if some action actually resolved; turns that
     # were all rejected or clarification requests cost nothing.
-    if any(r["status"] == "resolved" for r in results):
+    time_passed = any(r["status"] == "resolved" for r in results)
+    if time_passed:
         npc_actions = effects.npc_phase(conn, character_id, rng, turn.turn)
         expired = effects.tick(conn, character_id)
+    else:
+        _undo_turn(conn, character_id)
+        turn.turn -= 1
     status = player_status(conn, character_id)
     defeat = death() if status["hp_band"] == "down" else None
     out = {"turn": turn.turn, "results": results, "player_status": status, "dialogue": [],
-           "npc_actions": npc_actions, "expired": expired, "defeat": defeat, "clarification_question": question}
+           "npc_actions": npc_actions, "expired": expired, "defeat": defeat, "clarification_question": question,
+           "time_passed": time_passed}
     if skipped:
         out["skipped"] = skipped
     return out

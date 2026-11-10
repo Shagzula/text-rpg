@@ -36,6 +36,8 @@ Meta commands:
   /quit          quit (progress is kept in the working save)"""
 SLOT_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 DEFAULT_SLOT = "quicksave"
+MAX_INPUT_CHARS = 300  # longer lines are refused before the interpreter sees them
+TOO_LONG = f"(That's too long for one turn; keep it under {MAX_INPUT_CHARS} characters.)"
 GRACEFUL_MISS = "(The world doesn't quite follow that. Try rephrasing, or type /help.)"
 
 
@@ -113,6 +115,9 @@ class Game:
             self._set_debug(False)
 
     def turn(self, text: str) -> Optional[str]:
+        if len(text) > MAX_INPUT_CHARS:
+            self.out(TOO_LONG)  # no turn, nothing logged
+            return None
         with db.connect(self.path) as conn:
             ctx = build_context(conn, self.cid)
             result = self._interpret_and_process(conn, text, ctx)
