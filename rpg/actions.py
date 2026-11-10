@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db, effects, rules
+from . import db, effects, rules, talk
 from . import inventory as inv
 from .context import npc_hp
 from .inventory import ItemError
@@ -42,6 +42,8 @@ TOOL_REQUIRED_METHODS = ("pick_lock",)
 IMPROVISED_PICK_TAG = "improvised_pick"  # e.g. a knife: picks a lock at very_hard (25)
 TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_open"))  # impossible without a tool that enables it
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
+TALK_APPROACHES = ("ask", "persuade", "deceive", "intimidate", "insight", "small_talk", "trade", "farewell")
+APPROACH_SKILL, SKILL_APPROACH = talk.APPROACH_SKILL, talk.SKILL_APPROACH
 DEATH_DESCRIPTION = "Your wounds overcome you, and you fall."
 
 
@@ -124,9 +126,22 @@ def validate_proposal(proposal) -> Tuple[Optional[Dict], List[Dict]]:
         cq = a.get("clarification_question")
         if cq is not None and not isinstance(cq, str):
             err(f"{p}.clarification_question", "string or null")
-        norm_actions.append({"action_type": at, "skill": skill, "target": target, "items_used": list(items),
-                             "last_ditch": ld is True, "est_difficulty": est, "intent_summary": summary,
-                             "clarification_needed": cn is True, "clarification_question": cq})
+        norm = {"action_type": at, "skill": skill, "target": target, "items_used": list(items),
+                "last_ditch": ld is True, "est_difficulty": est, "intent_summary": summary,
+                "clarification_needed": cn is True, "clarification_question": cq}
+        if at == "talk":
+            approach = a.get("approach")
+            if approach is None:  # deviation: inferred instead of re-prompting (schemas §e says required)
+                approach = SKILL_APPROACH.get(skill, "ask")
+            if approach not in TALK_APPROACHES:
+                err(f"{p}.approach", f"one of {list(TALK_APPROACHES)}")
+            else:
+                norm["skill"] = APPROACH_SKILL[approach]  # pairing enforced by correction, not re-prompt
+            for f in ("topic", "topic_text"):
+                if a.get(f) is not None and not isinstance(a.get(f), str):
+                    err(f"{p}.{f}", "string or null")
+            norm.update({"approach": approach, "topic": a.get("topic"), "topic_text": a.get("topic_text")})
+        norm_actions.append(norm)
     if errors:
         return None, errors
     return {"actions": norm_actions, "ooc": ooc, "unresolved_references": refs}, []
@@ -413,14 +428,11 @@ class Turn:
     def do_talk(self, a, t):
         if t is None:
             raise Reject("target_not_present", "no_target")  # BUG-10
-        if t is not None:
-            if t.kind != "npc":
-                raise Reject("impossible_action", "not_a_creature")
-            if not t.row["alive"]:
-                raise Reject("impossible_action", "target_defeated")
-        if a["skill"]:
-            return self.result(a, target=t, check=self.check(a, a["skill"], self.dc_for(a, t)))
-        return self.result(a, target=t)
+        if t.kind != "npc":
+            raise Reject("impossible_action", "not_a_creature")
+        if not t.row["alive"]:
+            raise Reject("impossible_action", "target_defeated")
+        return talk.resolve(self, a, t)
 
     def do_skill_check(self, a, t):
         for k in a["items_used"]:
