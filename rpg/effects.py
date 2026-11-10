@@ -59,12 +59,14 @@ def light(conn, item: Dict) -> Dict:
     old = item.get("state")
     if old == LIGHT_STATE:
         conn.execute("UPDATE items SET state = NULL WHERE key = ?", (item["key"],))
-        return {"type": "entity_state", "key": item["key"], "field": "state", "from": LIGHT_STATE, "to": "unlit"}
+        return {"type": "entity_state", "key": item["key"], "name": item["name"], "field": "state",
+                "from": LIGHT_STATE, "to": "unlit"}
     timer = item.get("timer")
     if timer is None:
         timer = rules.duration_turns(item["stats"].get("duration"))
     conn.execute("UPDATE items SET state = ?, timer = ? WHERE key = ?", (LIGHT_STATE, timer, item["key"]))
-    return {"type": "entity_state", "key": item["key"], "field": "state", "from": old or "unlit", "to": LIGHT_STATE}
+    return {"type": "entity_state", "key": item["key"], "name": item["name"], "field": "state",
+            "from": old or "unlit", "to": LIGHT_STATE}
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +177,7 @@ def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: in
         conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (npc["id"], name))
         conn.execute("INSERT INTO npc_conditions (npc_id, name, effect, duration_turns, source) VALUES (?, ?, ?, ?, ?)",
                      (npc["id"], name, json.dumps({"no_attack": name in INCAPACITATING}), turns, item["key"]))
-    return {"type": "npc_condition", "key": npc["key"], "name": name,
+    return {"type": "npc_condition", "key": npc["key"], "npc_name": npc["name"], "name": name,
             "outcome": "resisted" if resisted else "applied"}
 
 

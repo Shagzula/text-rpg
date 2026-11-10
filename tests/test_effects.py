@@ -114,7 +114,8 @@ def test_flash_powder_blinds_target_and_cancels_its_attack(world):
     give(world, "item_flash_powder")
     r = run(world, act("use_item", target="npc_tall_guard", items_used=["item_flash_powder"]), rng=Script(5))
     cons = r["results"][0]["consequences"]
-    assert {"type": "npc_condition", "key": "npc_tall_guard", "name": "blinded", "outcome": "applied"} in cons
+    assert {"type": "npc_condition", "key": "npc_tall_guard", "npc_name": "Tall Guard", "name": "blinded",
+            "outcome": "applied"} in cons
     assert any(c["type"] == "item_consumed" for c in cons)
     assert not inv.has_item(world["conn"], world["cid"], "item_flash_powder")
     assert r["npc_actions"] == [{"npc": "npc_tall_guard", "name": "Tall Guard", "action": "none",
@@ -208,7 +209,7 @@ def test_lit_light_source_dispels_darkness_and_burns_out(dark_cellar):
     give(w, "item_light_source")
     r = run(w, act("use_item", items_used=["item_light_source"]))
     assert r["results"][0]["state_changes"] == [{"type": "entity_state", "key": "item_light_source",
-                                                "field": "state", "from": "unlit", "to": "lit"}]
+                                                "name": "Torch", "field": "state", "from": "unlit", "to": "lit"}]
     assert effects.location_is_lit(w["conn"], w["cellar"], w["cid"])
     assert run(w, act("examine", target="loc_cellar"))["results"][0]["status"] == "resolved"
     assert inv.get_item(w["conn"], "item_light_source")["timer"] == 58  # 1 hour = 60 turns, 2 ticked

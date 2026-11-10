@@ -96,8 +96,11 @@ def _seed_demo(conn) -> int:
     conn.execute(ex, (store, yard, "north", "low wall", 0, None))
     conn.execute(ex, (yard, store, "south", "low wall", 0, None))
     conn.execute(ex, (store, cellar, "down", "iron-banded door", 1, 21))
-    conn.execute("INSERT INTO npcs (key, name, location_id, traits, defense_dc, max_hp) VALUES "
-                 "('npc_demo_guard', 'Dozing Guard', ?, '[\"drowsy\"]', 8, 4)", (store,))
+    from rpg.world import GUARD  # same fight numbers as the playable slice
+    conn.execute("INSERT INTO npcs (key, name, location_id, traits, defense_dc, max_hp, attack_bonus, damage, "
+                 "save_bonus) VALUES ('npc_demo_guard', 'Dozing Guard', ?, '[\"drowsy\"]', ?, ?, ?, ?, ?)",
+                 (store, GUARD["defense_dc"], GUARD["max_hp"], GUARD["attack_bonus"], GUARD["damage"],
+                  GUARD["save_bonus"]))
     # Rogue: STR 10, DEX 16, level 3 (PB +2)
     cid = db.create_character(conn, "Test Rogue", key="pc_test_rogue", level=3, scores={"str": 10, "dex": 16},
                               max_hp=24, location_id=store,

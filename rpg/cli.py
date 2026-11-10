@@ -8,6 +8,13 @@ progress and the next start continues it. /save NAME snapshots the working file
 into a slot file `slot_NAME.db` next to it (SQLite online backup API, so the copy
 is consistent); /load NAME copies a slot back over the working file. Slots are
 complete, independent games; /saves lists them.
+
+Dice: the RNG state is stored in the save (world_flags `_rng_state`) after every
+turn, so continuing a save or loading a slot resumes the same dice stream.
+--seed only seeds a game that has no stored dice state yet (i.e. a new game).
+
+Death: when a turn's result carries defeat {"type": "death"}, the run ends and
+`death_policy` offers: load the most recent save slot, start a new game, or quit.
 """
 from __future__ import annotations
 
@@ -75,6 +82,8 @@ class Game:
         with db.connect(self.path) as conn:
             fresh = find_player(conn) is None
             self.cid = seed_demo_slice(conn)
+            if not db.load_rng_state(conn, self.rng):
+                db.save_rng_state(conn, self.rng)  # a new game: the seed starts the stored stream
         if load and not self.load(load):
             raise SystemExit(f"No save slot named {load!r} in {self.slots_dir}")
         if load:
@@ -87,6 +96,12 @@ class Game:
             else:
                 self.out("(Continuing your game. Type /help for commands.)")
                 self.out(self._opening(conn))
+        self.dead_at_start = self.player_dead()
+
+    def player_dead(self) -> bool:
+        with db.connect(self.path) as conn:
+            row = conn.execute("SELECT current_hp FROM characters WHERE id = ?", (self.cid,)).fetchone()
+        return row is not None and row[0] <= 0
 
     def _opening(self, conn) -> str:
         ctx = build_context(conn, self.cid)
@@ -96,6 +111,8 @@ class Game:
     def run(self, new: bool = False, load: Optional[str] = None) -> None:
         self.start(new=new, load=load)
         try:
+            if self.player_dead() and death_policy(self) == "quit":
+                return
             while True:
                 try:
                     line = self.input("> ")
@@ -132,8 +149,11 @@ class Game:
                 self.out(f"(/{cmd} isn't supported yet. Type /help.)")
                 return None
             narration = llm_mod.narrate_safely(self.llm, result, build_context(conn, self.cid))
-            log_narration(conn, self.cid, result["turn"], narration)
+            log_narration(conn, self.cid, result["turn"] or 0, narration)
+            db.save_rng_state(conn, self.rng)
         self.out(narration)
+        if result.get("defeat"):
+            return death_policy(self)
         return None
 
     def _interpret_and_process(self, conn, text, ctx):
@@ -207,9 +227,15 @@ class Game:
         db.init_db(self.path)  # verifies schema_version
         with db.connect(self.path) as conn:
             self.cid = find_player(conn)
+            if not db.load_rng_state(conn, self.rng):
+                db.save_rng_state(conn, self.rng)
             self.out(f"(Loaded slot '{name}'.)")
             self.out(self._opening(conn))
         return True
+
+    def latest_slot(self) -> Optional[str]:
+        slots = sorted(self.slots_dir.glob("slot_*.db"), key=lambda p: p.stat().st_mtime)
+        return slots[-1].stem[len("slot_"):] if slots else None
 
     def list_saves(self) -> None:
         slots = sorted(self.slots_dir.glob("slot_*.db"))
@@ -245,6 +271,34 @@ class Game:
         elif not on and self._debug is not None:
             logger.removeHandler(self._debug)
             self._debug = None
+
+
+DEATH_PROMPT = "Your story ends here."
+
+
+def death_policy(game: "Game") -> str:
+    """PROVISIONAL death policy (one place to change it): death ends the run and offers
+    [L]oad the most recent save slot, [N]ew game, or [Q]uit. Returns "continue" (a game
+    is running again) or "quit"."""
+    slot = game.latest_slot()
+    options = ([f"[L]oad your most recent save ('{slot}')"] if slot else []) + ["start a [N]ew game", "[Q]uit"]
+    game.out(f"{DEATH_PROMPT} " + ", ".join(options[:-1]) + f", or {options[-1]}?")
+    while True:
+        try:
+            choice = (game.input("(l/n/q) > ") or "").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "q"
+        if choice in ("l", "load") and slot:
+            if game.load(slot):
+                return "continue"
+        elif choice in ("n", "new"):
+            game.start(new=True)
+            return "continue"
+        elif choice in ("q", "quit", "exit"):
+            game.out("Farewell.")
+            return "quit"
+        else:
+            game.out("(Choose " + ("l, " if slot else "") + "n or q.)")
 
 
 def main(argv=None) -> int:

@@ -65,9 +65,9 @@ def test_seeded_runs_are_deterministic(tmp_path):
 
 
 def test_full_demo_route(tmp_path):
-    g, out = play(tmp_path, "go east", "desperately kick the door", "down", "take rope", "pull lever",
+    g, out = play(tmp_path, "go east", "desperately kick the door", "light torch", "down", "take rope", "pull lever",
                   "/quit", seed=5, new=True)
-    assert location(g) == "loc_cellar" and "item_coil_of_rope" in held(g)
+    assert location(g) == "loc_cellar" and "item_rope" in held(g)
     with db.connect(g.path) as conn:
         assert db.get_flag(conn, "cellar_gate_opened") is True
         assert [r[0] for r in conn.execute("SELECT name FROM character_conditions")] == ["strained_str"]

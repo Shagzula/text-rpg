@@ -40,7 +40,7 @@ def one(conn, cid, text):
     ("look at mara", {"action_type": "examine", "target": "npc_mara"}),
     ("take crowbar", {"action_type": "take", "items_used": ["item_crowbar"]}),
     ("pick up the crowbar", {"action_type": "take", "items_used": ["item_crowbar"]}),
-    ("drop lockpick set", {"action_type": "drop", "items_used": ["item_lockpick_set"]}),
+    ("drop lockpick set", {"action_type": "drop", "items_used": ["item_lockpicks"]}),
     ("equip shortsword", {"action_type": "equip", "items_used": ["item_rusty_shortsword"]}),
     ("unequip boots", {"action_type": "unequip", "items_used": ["item_travel_boots"]}),
     ("attack mara", {"action_type": "attack", "target": "npc_mara", "items_used": ["item_rusty_shortsword"]}),
@@ -88,6 +88,7 @@ def test_mock_pick_lock_targets_the_locked_exit(game):
 def test_mock_use_fixture_targets_it(game):
     conn, cid = game
     move_to(conn, cid, "loc_cellar")
+    conn.execute("UPDATE items SET state = 'lit' WHERE key = 'item_torch'")  # the demo cellar is dark
     a, _ = one(conn, cid, "pull lever")
     assert a["items_used"] == ["item_rusty_lever"] and a["target"] == "item_rusty_lever"
 

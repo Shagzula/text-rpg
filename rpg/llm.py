@@ -47,13 +47,23 @@ def ensure_closing_line(text: str) -> str:
     return f"{t}\n\n{CLOSING_LINE}"
 
 
-def finalize_narration(text, regenerate: Optional[Callable[[], str]] = None) -> str:
+def strip_closing_line(text: str) -> str:
+    t = text.rstrip()
+    while t.endswith(CLOSING_LINE):
+        t = t[: -len(CLOSING_LINE)].rstrip()
+    return t
+
+
+def finalize_narration(text, regenerate: Optional[Callable[[], str]] = None, *, defeat: bool = False) -> str:
     """Regenerate once if empty/malformed (JSON, markup, fences), then make sure the
-    narration ends with the closing line."""
+    narration ends with the closing line -- unless the turn ended in defeat, where the
+    closing line is removed (the CLI follows with the load/new/quit offer)."""
     if is_malformed(text) and regenerate is not None:
         text = regenerate()
     if is_malformed(text):
         text = FALLBACK_NARRATION
+    if defeat:
+        return strip_closing_line(text.strip()) or FALLBACK_NARRATION
     return ensure_closing_line(text.strip())
 
 
@@ -63,7 +73,7 @@ def narrate_safely(llm: "LLMClient", result: Dict, context: Dict) -> str:
             return llm.narrate(result, context)
         except Exception:  # noqa: BLE001 - a broken narrator must not kill the turn
             return ""
-    return finalize_narration(regen(), regenerate=regen)
+    return finalize_narration(regen(), regenerate=regen, defeat=bool(result.get("defeat")))
 
 
 # ---------------------------------------------------------------------------
@@ -294,9 +304,37 @@ class MockLLM:
             if r["outcome"] == "clarify":
                 continue
             lines.append(self._narrate_one(r, context))
+        lines += [self._npc_action_text(a) for a in result.get("npc_actions", [])]
+        lines += [self._expired_text(e) for e in result.get("expired", [])]
         if result.get("defeat"):
             lines.append(result["defeat"].get("description") or "Everything goes dark.")
+            return "\n".join(l for l in lines if l)  # no closing line: the run is over
         return "\n".join(l for l in lines if l) + f"\n\n{CLOSING_LINE}"
+
+    HURT_TEXT = {"unhurt": "", "scratched": "It stings.", "wounded": "You're bleeding now.",
+                 "badly_wounded": "You're badly hurt.", "near_death": "You can barely stay on your feet.",
+                 "down": "You crumple to the ground."}
+
+    def _npc_action_text(self, a: Dict) -> str:
+        name = a.get("name") or "foe"
+        if a.get("action") == "none":
+            return f"The {name} flails about, {a.get('reason') or 'helpless'}, and can't find you."
+        if a.get("outcome") == "success":
+            how = {"narrow": " a glancing blow", "clear": "", "overwhelming": " a brutal blow"}.get(a.get("degree"), "")
+            lead = f"The {name} lands{how} on you." if how else f"The {name} hits you."
+            return f"{lead} {self.HURT_TEXT.get(a.get('hp_band'), '')}".strip()
+        return f"The {name} attacks, but you avoid the blow."
+
+    @staticmethod
+    def _expired_text(e: Dict) -> str:
+        t = e.get("type")
+        if t == "condition_expired":
+            return f"The feeling of being {e.get('name')} fades."
+        if t == "npc_condition_expired":
+            return f"The {e.get('npc_name')} is no longer {e.get('name')}."
+        if t == "light_burnt_out":
+            return f"Your {e.get('name')} gutters and goes out."
+        return ""
 
     def _describe_scene(self, context: Dict) -> str:
         loc = context.get("location") or {}
@@ -329,6 +367,14 @@ class MockLLM:
         "lacks_ability": "You have no such power.",
         "unrecognized": "Nothing happens. That isn't something you can do here.",
         "already_here": "You're already here.",
+        "too_dark": "It's too dark to make anything out.",
+        "needs_tool": "You'd need the right tool for that.",
+        "no_exit": "There's no way to go in that direction.",
+        "no_way_back": "There's nowhere to go back to.",
+        "already_open": "It's already open.",
+        "already_full": "You're already in full health; better to save it.",
+        "no_target": "There's no one here to talk to.",
+        "light_not_held": "You'd need to be holding it.",
     }
     DEGREE_WORD = {"narrow": "Just barely, ", "clear": "", "overwhelming": "Easily, ", None: ""}
     FAIL_WORD = {"narrow": "You come close, but ", "clear": "", "overwhelming": "It goes badly: ", None: ""}
@@ -385,13 +431,17 @@ class MockLLM:
             "item_equipped": f"You ready the {c.get('name')}.",
             "item_unequipped": f"You put away the {c.get('name')}.",
             "npc_defeated": f"The {c.get('name')} goes down and stays down.",
-            "entity_state": "It takes the blow.",
+            "entity_state": {"lit": f"The {c.get('name') or 'light'} flares to life.",
+                             "unlit": f"You put out the {c.get('name') or 'light'}.",
+                             "open": "It comes open."}.get(c.get("to"), "It takes the blow."),
             "flag_set": "" if str(c.get("key", "")).startswith(("visited:", "defeated:")) else "Somewhere, something clunks into place.",
         }.get(c["type"], "")
 
     @staticmethod
     def _consequence_text(c: Dict, context: Dict) -> str:
         t = c["type"]
+        if t == "condition" and c.get("severity") == "minor" and not c.get("lasting"):
+            return f"You feel {c.get('name')}."
         if t == "condition":
             d = c.get("description") or "You are hurt"
             return ("You " + d[0].lower() + d[1:] if not d.lower().startswith("you") else d) + "."
@@ -404,7 +454,15 @@ class MockLLM:
         if t == "npc_disposition_changed" and c.get("to") == "hostile":
             return "They turn on you, hostile now."
         if t == "condition_removed":
-            return "You feel the affliction lift."
+            return "The tonic's edge is spent." if c.get("reason") == "spent" else "You feel the affliction lift."
+        if t == "npc_condition":
+            who = c.get("npc_name") or "target"
+            return (f"The {who} reels, {c.get('name')}!" if c.get("outcome") == "applied"
+                    else f"The {who} shields their eyes in time.")
+        if t == "tool_used":
+            return f"Your {c.get('name')} makes the work easier."
+        if t == "darkness":
+            return "It's hard to see in the dark."
         if t == "item_consumed":
             return "That was the last of it."
         return ""

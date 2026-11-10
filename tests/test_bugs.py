@@ -102,3 +102,78 @@ def test_bug05_overlong_input_is_refused_and_not_logged(tmp_path):
     with db.connect(g.path) as conn:
         assert max(len(r[0]) for r in conn.execute("SELECT text FROM narration_log")) < 2000
     assert g.path.stat().st_size <= size + 8192
+
+
+# Death (brief a) + steering: no closing line on defeat; CLI offers load/new/quit ------------------
+
+def kill_setup(path, hp=1):
+    with db.connect(path) as conn:
+        conn.execute("UPDATE npcs SET disposition = -90, attack_bonus = 30 WHERE key = 'npc_dozing_guard'")
+        conn.execute("UPDATE characters SET current_hp = ?, location_id = (SELECT id FROM locations "
+                     "WHERE key = 'loc_storeroom') WHERE is_player = 1", (hp,))
+
+
+def test_death_narration_has_no_closing_line_and_offers_load(tmp_path):
+    from rpg import cli
+    from rpg.llm import CLOSING_LINE
+    g, _ = play(tmp_path, "/save before", "/quit", new=True)
+    kill_setup(g.path)
+    g, out = play(tmp_path, "wait", "l", "/quit")
+    death_text = next(o for o in out if "fall" in o)
+    assert not death_text.rstrip().endswith(CLOSING_LINE)
+    offer = out[out.index(death_text) + 1]
+    assert offer.startswith(cli.DEATH_PROMPT) and "'before'" in offer
+    assert "(Loaded slot 'before'.)" in out and location(g) == "loc_town_square"
+
+
+def test_death_then_new_game_or_quit(tmp_path):
+    g, _ = play(tmp_path, "/quit", new=True)
+    kill_setup(g.path)
+    g, out = play(tmp_path, "wait", "x", "n", "/quit")
+    assert "(Choose n or q.)" in out and location(g) == "loc_town_square"
+    with db.connect(g.path) as conn:
+        assert conn.execute("SELECT current_hp FROM characters WHERE is_player = 1").fetchone()[0] == 10
+    kill_setup(g.path)
+    g, out = play(tmp_path, "wait", "q", "look")
+    assert out[-1] == "Farewell." and g.input.lines == ["look"]  # the run ended
+
+
+def test_continuing_a_dead_save_goes_straight_to_the_offer(tmp_path):
+    from rpg import cli
+    g, _ = play(tmp_path, "/quit", new=True)
+    kill_setup(g.path, hp=0)
+    g, out = play(tmp_path, "q", "look")
+    assert any(o.startswith(cli.DEATH_PROMPT) for o in out) and g.input.lines == ["look"]
+
+
+def test_finalize_narration_on_defeat_strips_closing_line():
+    from rpg import llm
+    assert llm.finalize_narration("You fall.\n\nWhat do you do?", defeat=True) == "You fall."
+    assert llm.finalize_narration("You fall.", defeat=True) == "You fall."
+    assert llm.finalize_narration("You fall.").endswith(llm.CLOSING_LINE)
+
+
+# BUG-04: dice state persists with the save ------------------------------------------------------
+
+def debug_rolls(out):
+    import re
+    return [int(m.group(1)) for o in out for m in [re.search(r"'roll': (\d+)", o)] if m and "check" in o]
+
+
+def test_bug04_rng_continues_across_restart(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    _, control = play(a, "/debug", "go east", "attack lamp", "attack lamp", "attack lamp", "/quit", seed=5, new=True)
+    play(b, "/debug", "go east", "attack lamp", "/quit", seed=5, new=True)
+    _, resumed = play(b, "/debug", "attack lamp", "/quit", seed=5)      # same seed: stored stream wins
+    assert debug_rolls(control)[1] == debug_rolls(resumed)[0]
+    _, unseeded = play(b, "/debug", "attack lamp", "/quit", seed=999)  # any seed: still the stored stream
+    assert debug_rolls(unseeded)[0] == debug_rolls(control)[2]
+
+
+def test_bug04_slot_restores_dice(tmp_path):
+    g, out = play(tmp_path, "/debug", "go east", "/save s", "attack lamp", "/load s", "attack lamp", "/quit",
+                  seed=5, new=True)
+    r = debug_rolls(out)
+    assert len(r) == 2 and r[0] == r[1]

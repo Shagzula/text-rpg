@@ -236,3 +236,21 @@ def add_item(conn, template_key: str, *, character_id: Optional[int] = None,
         (key, row["id"], character_id, location_id, display_name, quantity, int(equipped)),
     )
     return cur.lastrowid
+
+
+# -- dice state (BUG-04): the RNG lives in the save so slots and resumes are deterministic --
+RNG_FLAG = "_rng_state"
+
+
+def save_rng_state(conn, rng) -> None:
+    version, internal, gauss = rng.getstate()
+    set_flag(conn, RNG_FLAG, [version, list(internal), gauss])
+
+
+def load_rng_state(conn, rng) -> bool:
+    """Restore the saved dice stream into `rng`. False if the save has none."""
+    state = get_flag(conn, RNG_FLAG)
+    if not state:
+        return False
+    rng.setstate((state[0], tuple(state[1]), state[2]))
+    return True

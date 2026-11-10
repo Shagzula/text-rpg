@@ -5,6 +5,8 @@ from __future__ import annotations
 from . import db
 
 PLAYER_KEY = "pc_player"
+# Guard numbers (playtest: combat was trivial at 4 HP / DC 8 and no counterattacks).
+GUARD = {"defense_dc": 11, "max_hp": 12, "attack_bonus": 3, "damage": "1d6", "save_bonus": 1}
 
 TEMPLATES = [
     {"id": "item_short_blade", "name": "Short Blade", "category": "weapon", "slot": "main_hand", "value": 100,
@@ -16,12 +18,36 @@ TEMPLATES = [
     {"id": "item_healing_draught", "name": "Minor Healing Draught", "category": "consumable", "slot": "belt",
      "value": 500, "weight": 0.5, "stats": {"subcategory": "healing", "effect": "heal", "amount": "2d4+2", "uses": 1},
      "notes": "A small vial of red liquid."},
-    {"id": "item_lockpick_set", "name": "Lockpick Set", "category": "tool", "slot": "belt", "value": 250,
-     "weight": 1, "stats": {"subcategory": "thieves_tools", "enables": ["pick_lock"]}, "notes": "Thin picks in a roll."},
-    {"id": "item_crowbar", "name": "Crowbar", "category": "tool", "slot": "none", "value": 20, "weight": 5,
-     "stats": {"subcategory": "lever", "enables": ["force_open"]}, "notes": "Heavy iron, bent at one end."},
-    {"id": "item_coil_of_rope", "name": "Coil of Rope", "category": "utility", "slot": "none", "value": 10,
-     "weight": 10, "stats": {"subcategory": "climbing"}, "notes": "Fifty feet of hemp."},
+    # Keys and stats below mirror content/items_tier1.yaml.
+    {"id": "item_lockpicks", "name": "Lockpick Set", "category": "tool", "slot": "belt", "value": 250,
+     "weight": 1, "stats": {"subcategory": "thieves_tools", "enables": ["pick_lock", "disarm_trap"],
+                            "skill_bonus": {"skill": "sleight_of_hand", "grants": "required_for_check"},
+                            "uses": None}, "tags": ["tool", "illicit"], "notes": "Thin picks in a roll."},
+    {"id": "item_crowbar", "name": "Crowbar", "category": "tool", "slot": "belt", "value": 20, "weight": 5,
+     "stats": {"subcategory": "lever", "enables": ["force_open"],
+               "skill_bonus": {"skill": "athletics", "grants": "advantage"}, "uses": None},
+     "tags": ["tool", "noisy", "improvised_weapon"], "notes": "Heavy iron, bent at one end."},
+    {"id": "item_rope", "name": "Coil of Rope (50 ft)", "category": "utility", "slot": "none", "value": 10,
+     "weight": 10, "stats": {"subcategory": "climbing", "length_ft": 50,
+                             "effect": "enables climbing/descending; advantage on athletics climb checks when anchored"},
+     "notes": "Fifty feet of hemp."},
+    {"id": "item_light_source", "name": "Light Source", "category": "utility", "slot": "off_hand", "value": 5,
+     "weight": 1, "stats": {"subcategory": "light", "effect": "light", "bright_radius_ft": 20, "dim_radius_ft": 20,
+                            "duration": "1 hour", "uses": 1, "improvised_damage": "1 fire"},
+     "tags": ["utility", "light", "fire"], "notes": "A pitch-soaked torch."},
+    {"id": "item_rations", "name": "Travel Rations (1 day)", "category": "consumable", "slot": "none", "value": 5,
+     "weight": 2, "stats": {"subcategory": "food", "effect": "sustenance", "uses": 1}, "tags": ["food"],
+     "notes": "Hard bread and dried meat."},
+    {"id": "item_bracing_tonic", "name": "Bracing Tonic", "category": "consumable", "slot": "belt", "value": 75,
+     "weight": 0.5, "stats": {"subcategory": "buff", "effect": "buff", "buff": "advantage on next STR or CON check",
+                              "duration": "10 minutes or 1 check", "uses": 1,
+                              "side_effect": "disadvantage on WIS checks for duration"},
+     "tags": ["drinkable"], "notes": "A bitter green draught."},
+    {"id": "item_flash_powder", "name": "Flash Powder Packet", "category": "consumable", "slot": "belt", "value": 50,
+     "weight": 0.5, "stats": {"subcategory": "thrown_utility", "effect": "condition", "condition": "blinded",
+                              "duration": "1 round", "area": "10 ft",
+                              "save": {"ability": "con", "est_difficulty": "medium"}, "uses": 1},
+     "tags": ["thrown", "escape"], "notes": "A twist of paper that bursts into blinding light."},
     {"id": "item_hanging_lamp", "name": "Hanging lamp", "category": "utility", "slot": "none",
      "stats": {}, "tags": ["fixture"], "notes": "An oil lamp swinging from a hook, lit."},
     {"id": "item_rusty_lever", "name": "Rusty lever", "category": "utility", "slot": "none",
@@ -50,18 +76,21 @@ def seed_demo_slice(conn) -> int:
                                "A cramped room of shelves and crates. An iron-banded door leads down.")).lastrowid
     cellar = conn.execute(loc, ("loc_cellar", "Cellar",
                                 "Damp stone walls and the smell of old wine. Something glints in the corner.")).lastrowid
+    conn.execute("UPDATE locations SET dark = 1 WHERE id = ?", (cellar,))  # bring a light
     ex = ("INSERT INTO location_exits (from_location_id, to_location_id, direction, description, locked, unlock_dc)"
           " VALUES (?, ?, ?, ?, ?, ?)")
     conn.execute(ex, (square, store, "east", "storeroom door", 0, None))
     conn.execute(ex, (store, square, "west", "door to the square", 0, None))
     conn.execute(ex, (store, cellar, "down", "iron-banded door", 1, 15))
     conn.execute(ex, (cellar, store, "up", "iron-banded door", 1, 15))
-    npc = ("INSERT INTO npcs (key, name, description, location_id, traits, disposition, defense_dc, max_hp, is_major)"
-           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    npc = ("INSERT INTO npcs (key, name, description, location_id, traits, disposition, defense_dc, max_hp, is_major,"
+           " attack_bonus, damage, save_bonus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     conn.execute(npc, ("npc_mara", "Mara", "A gruff stallholder packing up for the night.", square,
-                       '["gruff", "observant"]', 20, 10, 6, 1))
+                       '["gruff", "observant"]', 20, 10, 6, 1, 2, "1d4", 0))
+    # A real fight: hits the premade (defense 12) on 9+ for 1d6; ~3 trades to drop him.
     conn.execute(npc, ("npc_dozing_guard", "Dozing Guard", "A guard asleep on a stool, keys at his belt.", store,
-                       '["drowsy"]', 0, 8, 4, 0))
+                       '["drowsy"]', 0, GUARD["defense_dc"], GUARD["max_hp"], 0, GUARD["attack_bonus"],
+                       GUARD["damage"], GUARD["save_bonus"]))
     # Placeholder premade (STR 8 / INT 16), per content drafts.
     cid = db.create_character(conn, "You", key=PLAYER_KEY, level=1,
                               scores={"str": 8, "dex": 14, "con": 12, "int": 16, "wis": 12, "cha": 10},
@@ -72,10 +101,14 @@ def seed_demo_slice(conn) -> int:
                 display_name="Rusty Shortsword")
     db.add_item(conn, "item_travel_boots", character_id=cid, equipped=True)
     db.add_item(conn, "item_healing_draught", character_id=cid)
-    db.add_item(conn, "item_lockpick_set", character_id=cid)
+    db.add_item(conn, "item_lockpicks", character_id=cid)
+    db.add_item(conn, "item_light_source", character_id=cid, key="item_torch", display_name="Torch")
+    db.add_item(conn, "item_rations", character_id=cid, display_name="Travel Rations")
     db.add_item(conn, "item_crowbar", location_id=square)
+    db.add_item(conn, "item_bracing_tonic", location_id=square)
     db.add_item(conn, "item_hanging_lamp", location_id=store)
+    db.add_item(conn, "item_flash_powder", location_id=store)
     db.add_item(conn, "item_rusty_lever", location_id=cellar)
-    db.add_item(conn, "item_coil_of_rope", location_id=cellar)
+    db.add_item(conn, "item_rope", location_id=cellar)
     conn.execute("INSERT INTO save_games (name, character_id, turn) VALUES ('autosave', ?, 0)", (cid,))
     return cid
