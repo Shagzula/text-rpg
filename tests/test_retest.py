@@ -207,3 +207,30 @@ def test_r08_search_in_the_dark_is_a_check_at_disadvantage(demo, text, caplog):
     assert res["status"] == "resolved" and res["skill"] == "investigation"
     assert "'advantage': -1" in caplog.text
     assert {"type": "darkness", "description": "hard to see in the dark"} in res["consequences"]
+
+
+# ---- retest of 9127044 (playtest/2026-11-10-retest-9127044.md) ------------------------------------
+
+def test_r2_01_talk_to_absent_npc_is_rejected_not_retargeted(demo):
+    go(demo, "loc_storeroom")
+    r, text = say(demo, "talk to mara")
+    res = r["results"][0]
+    assert (res["status"], res["reason"], res["detail"]) == ("rejected", "target_not_present", "elsewhere")
+    assert res["target"] == {"key": "npc_mara", "name": "Mara"} and "talk" not in res
+    assert r["time_passed"] is False and r["turn"] == 0
+    assert "Mara isn't here." in text and "Dozing Guard" not in text
+
+
+def test_r2_01_ask_absent_npc_parses_as_talk(demo):
+    go(demo, "loc_storeroom")
+    p = llm_mod.MockLLM().interpret("ask mara about the cellar", build_context(*demo))
+    a = p["actions"][0]
+    assert (a["action_type"], a["target"], a["topic"]) == ("talk", "npc_mara", None)
+
+
+def test_r2_07_absent_npc_line_is_people_shaped(demo):
+    go(demo, "loc_storeroom")
+    _, text = say(demo, "ask mara about the cellar")
+    assert "Mara isn't here." in text and "that isn't here" not in text
+    _, text = say(demo, "talk to the blacksmith")
+    assert "There's nobody like that here." in text

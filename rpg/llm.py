@@ -283,9 +283,9 @@ class MockLLM:
                     npc_txt, _, subject = f" {rest} ".partition(sep)
                     npc_txt, subject = npc_txt.strip(), subject.strip()
                     break
+        # A named person who isn't here stays a best-guess npc_ slug, so the engine rejects it
+        # (target_not_present) instead of the talk landing on whoever is present (BUG-R2-01).
         key, amb = (self._match(npc_txt, context, ("npc",), "npc") if npc_txt else (None, []))
-        if key and key not in {n["key"] for n in context.get("npcs_present", [])} and len(npcs) == 1 and not subject:
-            key, subject = npcs[0]["key"], npc_txt  # "ask about the cellar" with one person here
         if not npc_txt and len(npcs) == 1:
             key = npcs[0]["key"]
         self._apply_target(action, key, amb, npc_txt or "them", refs)
@@ -500,6 +500,10 @@ class MockLLM:
 
     def _narrate_one(self, r: Dict, context: Dict) -> str:
         tname = (r.get("target") or {}).get("name") or "it"
+        if r["status"] == "rejected" and r["reason"] == "target_not_present" and \
+                str((r.get("target") or {}).get("key", "")).startswith("npc_") and r.get("detail") != "no_target":
+            who = (r.get("target") or {}).get("name")
+            return f"{who} isn't here." if who else "There's nobody like that here."
         if r["status"] == "rejected":
             return self.DETAIL_TEXT.get(r.get("detail"), self.REJECT_TEXT.get(r["reason"], "That doesn't work."))
         out = []

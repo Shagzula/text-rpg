@@ -367,7 +367,10 @@ class Turn:
             return self.reject(a, e.code, e.detail, target=t)
 
     def _loose_target(self, key):
-        return {"key": key, "name": None} if key else None
+        if not key:
+            return None
+        n = self.conn.execute("SELECT name FROM npcs WHERE key = ?", (key,)).fetchone()
+        return {"key": key, "name": n["name"] if n else None}  # a named person elsewhere (BUG-R2-07)
 
     # -- handlers -----------------------------------------------------------
     def do_wait(self, a, t):
