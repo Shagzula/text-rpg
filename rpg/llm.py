@@ -1,0 +1,434 @@
+"""Pluggable LLM layer: interpreter (player text -> action proposal) and narrator
+(engine result -> prose). Stdlib only.
+
+RPG_LLM selects the provider: 'mock' (default, deterministic keyword rules),
+'openai', or 'anthropic'. Real providers read their API key from the environment
+only (OPENAI_API_KEY / ANTHROPIC_API_KEY); their network calls are not
+implemented yet.
+"""
+from __future__ import annotations
+
+import os
+import re
+from typing import Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+
+CLOSING_LINE = "What do you do?"
+FALLBACK_NARRATION = "The moment passes in a blur, and the details are hard to make out."
+
+
+class LLMConfigError(RuntimeError):
+    """Provider misconfiguration (unknown provider, missing API key)."""
+
+
+@runtime_checkable
+class LLMClient(Protocol):
+    def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
+        """Player text + context block -> action proposal dict (contracts.md (a))."""
+
+    def narrate(self, result: Dict, context: Dict) -> str:
+        """Engine result (contracts.md (b)) + context block -> second-person prose."""
+
+
+# ---------------------------------------------------------------------------
+# Narration post-processing
+# ---------------------------------------------------------------------------
+
+def is_malformed(text) -> bool:
+    if not isinstance(text, str) or not text.strip():
+        return True
+    t = text.strip()
+    return t[0] in "{[<" or "```" in t or len(t) < 3
+
+
+def ensure_closing_line(text: str) -> str:
+    t = text.rstrip()
+    if t.endswith(CLOSING_LINE):
+        return t
+    return f"{t}\n\n{CLOSING_LINE}"
+
+
+def finalize_narration(text, regenerate: Optional[Callable[[], str]] = None) -> str:
+    """Regenerate once if empty/malformed (JSON, markup, fences), then make sure the
+    narration ends with the closing line."""
+    if is_malformed(text) and regenerate is not None:
+        text = regenerate()
+    if is_malformed(text):
+        text = FALLBACK_NARRATION
+    return ensure_closing_line(text.strip())
+
+
+def narrate_safely(llm: "LLMClient", result: Dict, context: Dict) -> str:
+    def regen():
+        try:
+            return llm.narrate(result, context)
+        except Exception:  # noqa: BLE001 - a broken narrator must not kill the turn
+            return ""
+    return finalize_narration(regen(), regenerate=regen)
+
+
+# ---------------------------------------------------------------------------
+# Mock LLM
+# ---------------------------------------------------------------------------
+
+LAST_DITCH_PHRASES = ("try hard", "trying hard", "desperately", "with everything i have", "with all my strength",
+                      "whatever it takes", "all out")
+STOPWORDS = {"the", "a", "an", "my", "at", "to", "into", "on", "up", "with", "of", "some", "this", "that", "its", "it"}
+DIRECTIONS = ("north", "south", "east", "west", "up", "down", "in", "out", "northeast", "northwest",
+              "southeast", "southwest")
+
+VERBS: List[Tuple[Tuple[str, ...], str]] = [
+    (("i", "inv", "inventory"), "inventory"),
+    (("rest", "sleep"), "rest"),
+    (("wait", "z"), "wait"),
+    (("look", "l", "examine", "x", "inspect", "search"), "examine"),
+    (("go", "move", "walk", "enter", "climb", "head", "run"), "move"),
+    (("take", "get", "grab", "pick up", "pickup"), "take"),
+    (("drop", "leave"), "drop"),
+    (("equip", "wield", "wear", "ready", "draw"), "equip"),
+    (("unequip", "remove", "sheathe", "unwield"), "unequip"),
+    (("attack", "hit", "stab", "strike", "kill", "punch", "slash", "fight"), "attack"),
+    (("use", "drink", "pull", "push", "apply", "light", "eat"), "use_item"),
+    (("pick", "unlock", "lockpick"), "pick"),
+    (("open", "force", "kick", "break", "smash", "bash", "shove"), "force"),
+    (("talk", "speak", "ask", "greet", "chat"), "talk"),
+]
+OOC_WORDS = {"quit": "quit", "exit": "quit", "save": "save", "load": "load", "help": "help",
+             "stats": "stats", "undo": "undo"}
+
+
+def _slug(text: str) -> str:
+    words = [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS]
+    return "_".join(words) or "thing"
+
+
+def _words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS}
+
+
+class MockLLM:
+    """Deterministic keyword interpreter and templated narrator for offline play and tests."""
+
+    name = "mock"
+
+    # -- interpreter ----------------------------------------------------------
+    def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
+        text = " ".join(player_text.strip().lower().split())
+        last_ditch = False
+        for p in LAST_DITCH_PHRASES:
+            if p in text:
+                last_ditch = True
+                text = " ".join(text.replace(p, " ").split())
+        if text in OOC_WORDS:
+            return {"actions": [], "ooc": {"command": OOC_WORDS[text], "text": player_text}, "unresolved_references": []}
+        verb, rest = self._split_verb(text)
+        if verb is None and text in DIRECTIONS:
+            verb, rest = "move", text
+        action = {"action_type": "other", "skill": None, "target": None, "items_used": [], "last_ditch": last_ditch,
+                  "est_difficulty": "medium", "intent_summary": f"Try to {player_text.strip().rstrip('.')}.",
+                  "clarification_needed": False, "clarification_question": None}
+        refs: List[str] = []
+        if verb in ("inventory", "rest", "wait"):
+            action.update(action_type=verb, est_difficulty="trivial",
+                          intent_summary={"inventory": "Check what you are carrying.", "rest": "Take a short rest.",
+                                          "wait": "Wait and watch."}[verb])
+        elif verb == "examine":
+            action.update(action_type="examine", est_difficulty="trivial")
+            if rest:
+                key, amb = self._match(rest, context, ("npc", "item", "inv", "exit", "loc"), "item")
+                self._apply_target(action, key, amb, rest, refs)
+                action["intent_summary"] = f"Examine the {rest}."
+            else:
+                action["target"] = (context.get("location") or {}).get("key")
+                action["intent_summary"] = "Look around."
+        elif verb == "move":
+            key, amb = self._match(rest, context, ("exit",), "loc")
+            self._apply_target(action, key, amb, rest, refs)
+            action.update(action_type="move", est_difficulty="trivial", intent_summary=f"Go {rest}.")
+            if text.startswith("climb"):
+                action.update(skill="athletics", est_difficulty="easy")
+        elif verb in ("take", "drop", "equip", "unequip"):
+            pools = {"take": ("item",), "drop": ("inv",), "equip": ("inv",), "unequip": ("inv",)}[verb]
+            key, amb = self._match(rest, context, pools, "item")
+            if amb:
+                self._apply_target(action, None, amb, rest, refs)
+            else:
+                action["items_used"] = [key]
+            action.update(action_type=verb, est_difficulty="trivial", intent_summary=f"{verb.capitalize()} the {rest}.")
+        elif verb == "attack":
+            target_txt, _, weapon_txt = rest.partition(" with ")
+            key, amb = self._match(target_txt, context, ("npc", "item"), "npc")
+            self._apply_target(action, key, amb, target_txt, refs)
+            if weapon_txt:
+                wkey, _ = self._match(weapon_txt, context, ("inv", "item"), "item")
+                action["items_used"] = [wkey]
+            else:
+                action["items_used"] = [i["key"] for i in context.get("player_inventory", [])
+                                        if i.get("equipped") and i.get("slot") in ("main_hand", "two_hands")][:1]
+            action.update(action_type="attack", skill="str", intent_summary=f"Attack the {rest}.")
+        elif verb == "use_item":
+            item_txt, _, on_txt = rest.partition(" on ")
+            key, amb = self._match(item_txt, context, ("inv", "item"), "item")
+            if amb:
+                self._apply_target(action, None, amb, item_txt, refs)
+            else:
+                action["items_used"] = [key]
+            if on_txt:
+                tkey, tamb = self._match(on_txt, context, ("exit", "npc", "item"), "item")
+                self._apply_target(action, tkey, tamb, on_txt, refs)
+                if any(e["to"] == tkey for e in (context.get("location") or {}).get("exits", [])):
+                    action["skill"] = "athletics"  # prying/forcing a door with a tool
+            elif key in {i["key"] for i in context.get("visible_items", [])}:
+                action["target"] = key  # a fixture or scene object
+            else:
+                action["target"] = "self"
+            action.update(action_type="use_item", est_difficulty="trivial", intent_summary=f"Use the {rest}.")
+        elif verb in ("pick", "force"):
+            for junk in ("the lock on ", "lock on ", "the lock of ", "lock of ", "open "):
+                if rest.startswith(junk):
+                    rest = rest[len(junk):]
+            key, amb = self._match(rest or "door", context, ("exit", "item"), "loc")
+            self._apply_target(action, key, amb, rest or "door", refs)
+            skill = "sleight_of_hand" if verb == "pick" else "athletics"
+            action.update(action_type="skill_check", skill=skill,
+                          intent_summary=f"{'Pick the lock on' if verb == 'pick' else 'Force open'} the {rest or 'door'}.")
+        elif verb == "talk":
+            key, amb = self._match(rest, context, ("npc",), "npc")
+            self._apply_target(action, key, amb, rest, refs)
+            action.update(action_type="talk", est_difficulty="trivial", intent_summary=f"Talk to the {rest}.")
+        if last_ditch:
+            action["intent_summary"] = action["intent_summary"].rstrip(".") + ", desperately, whatever it costs."
+        return {"actions": [action], "ooc": None, "unresolved_references": refs}
+
+    @staticmethod
+    def _split_verb(text: str):
+        for words, verb in VERBS:
+            for w in sorted(words, key=len, reverse=True):
+                if text == w or text.startswith(w + " "):
+                    rest = text[len(w):].strip()
+                    for prefix in ("to ", "at ", "the ", "up ", "through "):
+                        if rest.startswith(prefix):
+                            rest = rest[len(prefix):]
+                    return verb, rest
+        return None, text
+
+    @staticmethod
+    def _candidates(context: Dict, pools) -> List[Tuple[str, str]]:
+        out = []
+        loc = context.get("location") or {}
+        if "npc" in pools:
+            out += [(n["key"], n["name"]) for n in context.get("npcs_present", [])]
+        if "item" in pools:
+            out += [(i["key"], i["name"]) for i in context.get("visible_items", [])]
+        if "inv" in pools:
+            out += [(i["key"], i["name"]) for i in context.get("player_inventory", [])]
+        if "exit" in pools:
+            out += [(e["to"], f"{e['direction']} {e['to_name']} {e.get('description') or ''}") for e in loc.get("exits", [])]
+        if "loc" in pools and loc:
+            out.append((loc["key"], loc["name"]))
+        return out
+
+    def _match(self, phrase: str, context: Dict, pools, prefix: str):
+        """Return (key, ambiguous_candidates). Unknown things get a best-guess slug."""
+        want = _words(phrase)
+        if not want:
+            return None, []
+        scored = []
+        for key, name in self._candidates(context, pools):
+            score = len(want & (_words(name) | _words(key.replace("_", " "))))
+            if score:
+                scored.append((score, key))
+        if not scored:
+            return f"{prefix}_{_slug(phrase)}", []
+        best = max(s for s, _ in scored)
+        top = sorted({k for s, k in scored if s == best})
+        if len(top) > 1:
+            return None, top
+        return top[0], []
+
+    @staticmethod
+    def _apply_target(action, key, ambiguous, phrase, refs):
+        if ambiguous:
+            refs.append(phrase)
+            action["clarification_needed"] = True
+            action["clarification_question"] = f"Which {phrase} do you mean?"
+        else:
+            action["target"] = key
+
+    # -- narrator -------------------------------------------------------------
+    def narrate(self, result: Dict, context: Dict) -> str:
+        if result.get("opening"):
+            return self._describe_scene(context)
+        lines = []
+        if result.get("clarification_question"):
+            lines.append(result["clarification_question"])
+        for r in result.get("results", []):
+            if r["outcome"] == "clarify":
+                continue
+            lines.append(self._narrate_one(r, context))
+        if result.get("defeat"):
+            lines.append(result["defeat"].get("description") or "Everything goes dark.")
+        return "\n".join(l for l in lines if l) + f"\n\n{CLOSING_LINE}"
+
+    def _describe_scene(self, context: Dict) -> str:
+        loc = context.get("location") or {}
+        parts = [f"You are in the {loc.get('name', 'unknown place')}. {loc.get('description', '')}".strip()]
+        npcs = [n["name"] for n in context.get("npcs_present", []) if n.get("status") == "alive"]
+        if npcs:
+            parts.append("You see " + _join(npcs) + ".")
+        items = [i["name"] for i in context.get("visible_items", [])]
+        if items:
+            parts.append("Nearby: " + _join(items) + ".")
+        exits = [f"{e['direction']} ({e.get('description') or e['to_name']}{', locked' if e['state'] == 'locked' else ''})"
+                 for e in loc.get("exits", [])]
+        if exits:
+            parts.append("Ways out: " + _join(exits) + ".")
+        return " ".join(parts) + f"\n\n{CLOSING_LINE}"
+
+    REJECT_TEXT = {
+        "item_not_owned": "You reach for it, but you don't have that.",
+        "target_not_present": "You look around, but that isn't here.",
+        "item_unusable": "That won't work the way you want.",
+        "out_of_reach": "It's out of your reach.",
+        "impossible_action": "That simply isn't something you can do.",
+    }
+    DETAIL_TEXT = {
+        "exit_locked": "The way is locked tight.",
+        "fixture": "It's fixed in place; it won't come loose.",
+        "already_held": "You already have it.",
+        "enemies_present": "Not with enemies this close.",
+        "target_defeated": "There's no fight left in them.",
+        "lacks_ability": "You have no such power.",
+        "already_here": "You're already here.",
+    }
+    DEGREE_WORD = {"narrow": "Just barely, ", "clear": "", "overwhelming": "Easily, ", None: ""}
+    FAIL_WORD = {"narrow": "You come close, but ", "clear": "", "overwhelming": "It goes badly: ", None: ""}
+
+    def _narrate_one(self, r: Dict, context: Dict) -> str:
+        tname = (r.get("target") or {}).get("name") or "it"
+        if r["status"] == "rejected":
+            return self.DETAIL_TEXT.get(r.get("detail"), self.REJECT_TEXT.get(r["reason"], "That doesn't work."))
+        out = []
+        at, ok = r["action_type"], r["outcome"] == "success"
+        if r["reason"] in ("impossible", "impossible_even_last_ditch"):
+            out.append("You throw yourself at it, but it is far beyond you." if r["last_ditch"]
+                       else "You size it up and know at once it's beyond you.")
+        elif at == "move" and ok:
+            moved = [c for c in r["state_changes"] if c["type"] == "moved_to_location"]
+            out.append(f"{self.DEGREE_WORD[r['degree']]}you make your way to the {moved[0]['name']}." if moved
+                       else "You move on.")
+        elif at == "examine" and ok:
+            target = r.get("target") or {}
+            if not target or target.get("key") == (context.get("location") or {}).get("key"):
+                out.append(self._describe_scene(context).replace(f"\n\n{CLOSING_LINE}", ""))
+            else:
+                desc = target.get("description")
+                out.append(f"You study the {tname}." + (f" {desc}" if desc else " Nothing about it stands out."))
+        elif at == "inventory":
+            inv = [i["name"] + (" (equipped)" if i["equipped"] else "") for i in context.get("player_inventory", [])]
+            out.append("You are carrying " + _join(inv) + "." if inv else "You are carrying nothing.")
+        elif at == "rest":
+            out.append("You rest for a while, catching your breath.")
+        elif at == "wait":
+            out.append("You wait. Time passes.")
+        elif at == "attack":
+            out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on the {tname}." if ok
+                       else f"{self.FAIL_WORD[r['degree']]}the {tname} avoids your attack.")
+        elif at == "talk" and r["reason"] == "no_check":
+            out.append(f"You speak with the {tname}. They hear you out.")
+        elif ok and (r["state_changes"] or r["consequences"]) and at in ("take", "drop", "equip", "unequip", "use_item"):
+            pass  # the changes below say what happened
+        elif ok:
+            out.append(f"{self.DEGREE_WORD[r['degree']]}you manage it: {r['intent_summary'][0].lower()}{r['intent_summary'][1:]}")
+        else:
+            out.append(f"{self.FAIL_WORD[r['degree']]}you fail to {r['intent_summary'][0].lower()}{r['intent_summary'][1:]}")
+        out += [self._change_text(c) for c in r["state_changes"]]
+        out += [self._consequence_text(c, context) for c in r["consequences"]]
+        text = " ".join(x for x in out if x)
+        return text[0].upper() + text[1:] if text else text
+
+    @staticmethod
+    def _change_text(c: Dict) -> str:
+        return {
+            "exit_state": "The way opens.",
+            "item_added": f"You take the {c.get('name')}.",
+            "item_removed": f"The {c.get('name')} is gone from your pack." if not c.get("to") else f"You set down the {c.get('name')}.",
+            "item_equipped": f"You ready the {c.get('name')}.",
+            "item_unequipped": f"You put away the {c.get('name')}.",
+            "npc_defeated": f"The {c.get('name')} goes down and stays down.",
+            "entity_state": "It takes the blow.",
+            "flag_set": "" if str(c.get("key", "")).startswith(("visited:", "defeated:")) else "Somewhere, something clunks into place.",
+        }.get(c["type"], "")
+
+    @staticmethod
+    def _consequence_text(c: Dict, context: Dict) -> str:
+        t = c["type"]
+        if t == "condition":
+            d = c.get("description") or "You are hurt"
+            return ("You " + d[0].lower() + d[1:] if not d.lower().startswith("you") else d) + "."
+        if t == "healed":
+            return "Warmth spreads through you; you feel better."
+        if t == "damage_dealt":
+            return {"scratched": "It's only a scratch.", "wounded": "It's a real wound.",
+                    "badly_wounded": "They stagger, badly hurt.", "near_death": "They can barely stand.",
+                    "down": ""}.get(c.get("hp_band"), "")
+        if t == "npc_disposition_changed" and c.get("to") == "hostile":
+            return "They turn on you, hostile now."
+        if t == "condition_removed":
+            return "You feel the affliction lift."
+        if t == "item_consumed":
+            return "That was the last of it."
+        return ""
+
+
+def _join(items: List[str]) -> str:
+    items = list(items)
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+# ---------------------------------------------------------------------------
+# Real providers (stubs) and factory
+# ---------------------------------------------------------------------------
+
+class _KeyedProvider:
+    name = "base"
+    env_key = ""
+    default_model = ""
+
+    def __init__(self):
+        key = os.environ.get(self.env_key)
+        if not key:
+            raise LLMConfigError(
+                f"RPG_LLM={self.name} needs the {self.env_key} environment variable. "
+                f"Set it (export {self.env_key}=...) or use RPG_LLM=mock.")
+        self._api_key = key  # never logged or printed
+        self.model = os.environ.get("RPG_LLM_MODEL", self.default_model)
+
+    def __repr__(self):
+        return f"<{type(self).__name__} model={self.model!r}>"
+
+    def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
+        raise NotImplementedError(f"{self.name} interpreter calls are not implemented yet (use RPG_LLM=mock)")
+
+    def narrate(self, result: Dict, context: Dict) -> str:
+        raise NotImplementedError(f"{self.name} narrator calls are not implemented yet (use RPG_LLM=mock)")
+
+
+class OpenAIClient(_KeyedProvider):
+    name, env_key, default_model = "openai", "OPENAI_API_KEY", "gpt-4o-mini"
+
+
+class AnthropicClient(_KeyedProvider):
+    name, env_key, default_model = "anthropic", "ANTHROPIC_API_KEY", "claude-3-5-haiku-latest"
+
+
+PROVIDERS = {"mock": MockLLM, "openai": OpenAIClient, "anthropic": AnthropicClient}
+
+
+def get_llm(name: Optional[str] = None) -> LLMClient:
+    """Provider from `name`, else $RPG_LLM, else 'mock'."""
+    choice = (name or os.environ.get("RPG_LLM") or "mock").strip().lower()
+    if choice not in PROVIDERS:
+        raise LLMConfigError(f"Unknown RPG_LLM={choice!r}; choose one of {', '.join(PROVIDERS)}")
+    return PROVIDERS[choice]()
