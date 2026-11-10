@@ -147,6 +147,74 @@ def test_injected_rng_is_deterministic():
     assert a == b
 
 
+@pytest.mark.parametrize("name", ["str", "STR", "strength"])
+def test_raw_ability_check(name):
+    c = make(level=5, str=16, skills={"athletics": "expertise"})
+    r = resolve_skill_check(c, name, 12, roller=fixed(9))
+    assert r.skill is None and r.ability == "str" and r.modifier == 3  # no PB on raw checks
+    assert not r.auto_success and r.success and r.total == 12
+    assert skill_modifier(c, name) == 3
+
+
+def test_raw_ability_last_ditch_cost():
+    r = resolve_skill_check(make(con=8), "con", 22, last_ditch=True, roller=fixed(2))
+    assert r.consequences[0]["name"] == "injured_con" and r.consequences[0]["source"] == "last_ditch:con"
+
+
+@pytest.mark.parametrize("roll,outcome,degree", [
+    (10, "success", "narrow"),   # margin 0
+    (14, "success", "narrow"),   # +4
+    (15, "success", "clear"),    # +5
+    (20, "success", "overwhelming"),  # +10 (mod 0 vs DC 10)
+    (9, "failure", "narrow"),    # -1
+    (5, "failure", "clear"),     # -5
+])
+def test_degree_bands(roll, outcome, degree):
+    r = resolve_skill_check(make(), "athletics", 10, roller=fixed(roll))
+    assert (r.outcome, r.degree) == (outcome, degree)
+
+
+def test_degree_failure_overwhelming():
+    r = resolve_skill_check(make(str=20), "athletics", 18, roller=fixed(3))  # 3+5-18 = -10
+    assert r.degree == "overwhelming"
+
+
+def test_degree_auto_and_impossible():
+    assert resolve_skill_check(make(level=3, skills={"athletics": "proficient"}), "athletics", 10).degree == "clear"
+    assert resolve_skill_check(make(), "athletics", 25, roller=never()).degree == "overwhelming"
+
+
+HIDDEN = {"roll", "dc", "modifier", "bonus", "total", "margin", "needed_roll"}
+
+
+def test_narration_view_strips_numbers():
+    r = resolve_skill_check(make(str=8), "athletics", 18, last_ditch=True, roller=fixed(3))
+    n = r.to_narration_dict(state_changes=[{"type": "flag_set", "key": "k", "value": True}])
+    assert not HIDDEN & set(n)
+    assert n["outcome"] == "failure" and n["degree"] in ("narrow", "clear", "overwhelming")
+    assert n["reason"] == "last_ditch" and n["last_ditch"] is True
+    assert n["consequences"] == [{"type": "condition", "name": "injured_str",
+                                  "description": "Hurt yourself in a desperate attempt that failed",
+                                  "lasting": True, "severity": 2}]
+    assert n["state_changes"][0]["type"] == "flag_set"
+    assert HIDDEN <= set(r.to_dict())  # full numbers still available for the debug log
+
+
+def test_debug_log_gets_numbers(caplog):
+    r = resolve_skill_check(make(), "athletics", 10, roller=fixed(12))
+    with caplog.at_level("DEBUG", logger="rpg.debug"):
+        r.log_debug(turn=3)
+    assert "'roll': 12" in caplog.text and "'turn': 3" in caplog.text
+
+
+@pytest.mark.parametrize("hp,band", [(20, "unhurt"), (19, "scratched"), (15, "scratched"),
+                                     (14, "wounded"), (8, "wounded"), (7, "badly_wounded"),
+                                     (3, "badly_wounded"), (2, "near_death"), (1, "near_death"),
+                                     (0, "down"), (-4, "down")])
+def test_hp_band(hp, band):
+    assert rules.hp_band(hp, 20) == band
+
+
 def test_unknown_skill_rejected():
     with pytest.raises(ValueError):
         resolve_skill_check(make(), "flying", 10)

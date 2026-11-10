@@ -5,7 +5,7 @@ SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `d
 
 ## Layout
 - `rpg_engine.py` - Dan's starter, now a thin starter-compatible API + demo on top of `rpg/`
-- `rpg/schema.sql` - SQLite schema (v1, foreign keys on)
+- `rpg/schema.sql` - SQLite schema (v1, foreign keys on; content tables have INTEGER `id` + unique TEXT `key`)
 - `rpg/db.py` - `init_db(path)`, connections, character/condition load+save
 - `rpg/rules.py` - pure 5e math and `resolve_skill_check()` (house rules in its docstring)
 - `tests/` - pytest suite
@@ -29,3 +29,8 @@ current directory). `saves/` and `*.db` are git-ignored.
   ability's checks), failure -> `injured_<ability>` (-2). If even 25 + modifier < DC it fails
   without a roll and still injures.
 - **No natural 20/1 rules**: total >= DC succeeds.
+- **Raw ability checks**: pass `str`/`dex`/... (or `strength`) as the skill; no proficiency, no auto-success.
+- **Narration view**: `CheckResult.to_narration_dict()` gives outcome, degree
+  (`narrow` 0-4 / `clear` 5-9 / `overwhelming` 10+ margin), reason, flags, consequences, state
+  changes, and no numbers. Numbers go to the `rpg.debug` logger via `log_debug()`.
+- **HP bands**: `rules.hp_band()` returns unhurt / scratched / wounded / badly_wounded / near_death / down.

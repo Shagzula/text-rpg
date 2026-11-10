@@ -3,6 +3,9 @@
 -- existed, plus FKs, CHECKs, JSON columns and the tables the design doc needs.
 -- JSON columns are TEXT validated with json_valid(). Foreign keys are enforced
 -- (PRAGMA foreign_keys=ON is set on every connection by rpg.db).
+-- Content tables (factions, locations, npcs, item_templates, items) have an
+-- INTEGER primary key plus a unique TEXT `key` slug. Content files and LLM
+-- contracts refer to entities by `key` (e.g. 'wpn_short_blade', 'npc_mara').
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -11,13 +14,15 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 CREATE TABLE IF NOT EXISTS factions (
     id          INTEGER PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
+    key         TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
     description TEXT,
     traits      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(traits))
 );
 
 CREATE TABLE IF NOT EXISTS locations (
     id          INTEGER PRIMARY KEY,
+    key         TEXT NOT NULL UNIQUE,
     name        TEXT NOT NULL,
     description TEXT,
     area_tier   INTEGER NOT NULL DEFAULT 1 CHECK (area_tier >= 1),   -- power tier
@@ -79,31 +84,48 @@ CREATE TABLE IF NOT EXISTS character_conditions (
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Engine-owned item templates. id is a stable slug the LLM must map onto.
+-- Engine-owned item templates. `key` is the stable slug the LLM must map onto
+-- (YAML `id`). subcategory and other category-specific data go in stats JSON.
 CREATE TABLE IF NOT EXISTS item_templates (
-    id          TEXT PRIMARY KEY,               -- 'shortsword', 'torch'
+    id          INTEGER PRIMARY KEY,
+    key         TEXT NOT NULL UNIQUE,           -- 'wpn_short_blade'
     name        TEXT NOT NULL,
-    category    TEXT NOT NULL,                  -- weapon, armor, tool, consumable, misc
+    category    TEXT NOT NULL CHECK (category IN
+                  ('weapon', 'armor', 'shield', 'ammo', 'consumable', 'tool', 'utility', 'misc')),
     power_tier  INTEGER NOT NULL DEFAULT 1 CHECK (power_tier >= 1),
+    slot        TEXT NOT NULL DEFAULT 'none' CHECK (slot IN
+                  ('main_hand', 'off_hand', 'two_hands', 'body', 'head', 'hands', 'feet', 'belt', 'none')),
+    weight      REAL NOT NULL DEFAULT 0 CHECK (weight >= 0),     -- lb-equivalent
+    value       INTEGER NOT NULL DEFAULT 0 CHECK (value >= 0),   -- base currency units
     stats       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(stats)),
     tags        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags)),
     description TEXT
 );
 
--- Item instances owned by a character.
-CREATE TABLE IF NOT EXISTS inventory (
+-- Item instances. Exactly one owner: a character (inventory) or a location
+-- (lying in the scene, can be taken).
+CREATE TABLE IF NOT EXISTS items (
     id           INTEGER PRIMARY KEY,
-    character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-    template_id  TEXT NOT NULL REFERENCES item_templates(id),
+    key          TEXT NOT NULL UNIQUE,          -- 'item_0003' / 'wpn_short_blade_1'
+    template_id  INTEGER NOT NULL REFERENCES item_templates(id),
+    character_id INTEGER REFERENCES characters(id) ON DELETE CASCADE,
+    location_id  INTEGER REFERENCES locations(id) ON DELETE CASCADE,
     display_name TEXT,                          -- custom name, e.g. "Grandpa's rusty shovel"
     quantity     INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
     equipped     INTEGER NOT NULL DEFAULT 0 CHECK (equipped IN (0, 1)),
     notes        TEXT,
-    acquired_at  TEXT DEFAULT CURRENT_TIMESTAMP
+    acquired_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((character_id IS NULL) != (location_id IS NULL)),
+    CHECK (equipped = 0 OR character_id IS NOT NULL)
 );
+
+-- Starter-compatible name: items carried by characters.
+CREATE VIEW IF NOT EXISTS inventory AS
+    SELECT * FROM items WHERE character_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS npcs (
     id          INTEGER PRIMARY KEY,
+    key         TEXT NOT NULL UNIQUE,
     name        TEXT NOT NULL,
     description TEXT,
     location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
@@ -142,6 +164,7 @@ CREATE TABLE IF NOT EXISTS save_games (
     updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_inventory_character  ON inventory(character_id);
+CREATE INDEX IF NOT EXISTS idx_items_character     ON items(character_id);
+CREATE INDEX IF NOT EXISTS idx_items_location      ON items(location_id);
 CREATE INDEX IF NOT EXISTS idx_conditions_character ON character_conditions(character_id);
 CREATE INDEX IF NOT EXISTS idx_npcs_location        ON npcs(location_id);

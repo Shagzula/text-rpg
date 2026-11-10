@@ -146,3 +146,41 @@ def apply_check_consequences(conn, character_id: int, result: CheckResult) -> Ch
             fields = {k: v for k, v in c.items() if k not in ("type", "id")}
             c["id"] = add_condition(conn, character_id, Condition(**fields))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Item templates & item instances (minimal; inventory helpers come in task 2)
+# ---------------------------------------------------------------------------
+
+def add_item_template(conn, tpl: Dict) -> int:
+    """Insert a template from the content shape (items_tier1.yaml / contracts.md (c)).
+    Content `id` -> `key`, `notes` -> `description`, `subcategory` -> stats.subcategory."""
+    stats = dict(tpl.get("stats") or {})
+    if tpl.get("subcategory") is not None:
+        stats["subcategory"] = tpl["subcategory"]
+    cur = conn.execute(
+        """INSERT INTO item_templates (key, name, category, power_tier, slot, weight, value,
+           stats, tags, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (tpl.get("key") or tpl["id"], tpl["name"], tpl["category"], tpl.get("power_tier", 1),
+         tpl.get("slot") or "none", tpl.get("weight", 0), tpl.get("value", 0), json.dumps(stats),
+         json.dumps(tpl.get("tags") or []), tpl.get("description") or tpl.get("notes")),
+    )
+    return cur.lastrowid
+
+
+def add_item(conn, template_key: str, *, character_id: Optional[int] = None,
+             location_id: Optional[int] = None, quantity: int = 1, equipped: bool = False,
+             display_name: Optional[str] = None, key: Optional[str] = None) -> int:
+    """Create an item instance owned by a character or lying in a location."""
+    row = conn.execute("SELECT id FROM item_templates WHERE key = ?", (template_key,)).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown item template {template_key!r}")
+    if key is None:
+        n = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM items").fetchone()[0]
+        key = f"item_{n:04d}"
+    cur = conn.execute(
+        """INSERT INTO items (key, template_id, character_id, location_id, display_name, quantity, equipped)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (key, row["id"], character_id, location_id, display_name, quantity, int(equipped)),
+    )
+    return cur.lastrowid
