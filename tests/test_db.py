@@ -19,7 +19,7 @@ def test_schema_created_with_version(path):
     with db.connect(path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert EXPECTED_TABLES <= tables
-        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "3"
+        assert conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "4"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     db.init_db(path)  # idempotent
 
@@ -174,19 +174,24 @@ CREATE TABLE npcs (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT N
     out_of_reach INTEGER NOT NULL DEFAULT 0, is_major INTEGER NOT NULL DEFAULT 0, alive INTEGER NOT NULL DEFAULT 1,
     notes TEXT);
 INSERT INTO npcs (key, name) VALUES ('npc_old', 'Old Guard');
+CREATE TABLE characters (id INTEGER PRIMARY KEY, key TEXT UNIQUE, name TEXT NOT NULL);
+INSERT INTO characters (name) VALUES ('Old Hero');
 """
 
 
-def test_v2_save_migrates_to_v3(tmp_path):
+def test_v2_save_migrates_to_current(tmp_path):
     p = tmp_path / "v2.db"
     c = sqlite3.connect(p)
     c.executescript(V2_SNIPPET)
     c.close()
     db.init_db(p)
     with db.connect(p) as conn:
-        assert conn.execute("SELECT value FROM schema_meta").fetchone()[0] == "3"
+        assert conn.execute("SELECT value FROM schema_meta").fetchone()[0] == "4"
         assert conn.execute("SELECT dark FROM locations").fetchone()[0] == 0
         n = conn.execute("SELECT attack_bonus, damage, save_bonus FROM npcs").fetchone()
         assert tuple(n) == (2, "1d4", 0)
         assert "timer" in {r[1] for r in conn.execute("PRAGMA table_info(items)")}
         assert conn.execute("SELECT COUNT(*) FROM npc_conditions").fetchone()[0] == 0
+        assert conn.execute("SELECT gold FROM characters").fetchone()[0] == 0
+        for t in ("npc_personas", "npc_topics_revealed", "npc_dialogue_log"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0

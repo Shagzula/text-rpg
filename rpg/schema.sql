@@ -1,4 +1,4 @@
--- Text RPG engine schema (v3). All authoritative game state lives here.
+-- Text RPG engine schema (v4). All authoritative game state lives here.
 -- Extends the starter rpg_engine.py schema: same table/column names where they
 -- existed, plus FKs, CHECKs, JSON columns and the tables the design doc needs.
 -- JSON columns are TEXT validated with json_valid(). Foreign keys are enforced
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS characters (
     location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
     -- weapon proficiency categories ('simple', 'martial') and/or template keys
     weapon_proficiencies TEXT NOT NULL DEFAULT '["simple"]' CHECK (json_valid(weapon_proficiencies)),
+    gold        INTEGER NOT NULL DEFAULT 0 CHECK (gold >= 0),   -- coins, same unit as item_templates.value
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -190,6 +191,31 @@ CREATE TABLE IF NOT EXISTS npc_conditions (
     source         TEXT,
     created_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- NPC persona (content/npcs/<key>.yaml, validated at load). Holds secrets: engine-only.
+CREATE TABLE IF NOT EXISTS npc_personas (
+    npc_id  INTEGER PRIMARY KEY REFERENCES npcs(id) ON DELETE CASCADE,
+    persona TEXT NOT NULL CHECK (json_valid(persona))
+);
+
+-- Topics an NPC has told the player about (revealed once, known from then on).
+CREATE TABLE IF NOT EXISTS npc_topics_revealed (
+    id        INTEGER PRIMARY KEY,
+    npc_id    INTEGER NOT NULL REFERENCES npcs(id) ON DELETE CASCADE,
+    topic_key TEXT NOT NULL,
+    turn      INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (npc_id, topic_key)
+);
+
+-- Spoken NPC lines (voice_npc output), for recent_dialogue.
+CREATE TABLE IF NOT EXISTS npc_dialogue_log (
+    id         INTEGER PRIMARY KEY,
+    npc_id     INTEGER NOT NULL REFERENCES npcs(id) ON DELETE CASCADE,
+    turn       INTEGER NOT NULL DEFAULT 0,
+    line       TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_npc_dialogue_npc ON npc_dialogue_log(npc_id, id);
 
 -- Narrator output per turn, for the {recent_narrations} context block.
 CREATE TABLE IF NOT EXISTS narration_log (
