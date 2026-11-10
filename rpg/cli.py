@@ -96,7 +96,6 @@ class Game:
             else:
                 self.out("(Continuing your game. Type /help for commands.)")
                 self.out(self._opening(conn))
-        self.dead_at_start = self.player_dead()
 
     def player_dead(self) -> bool:
         with db.connect(self.path) as conn:
