@@ -1,6 +1,6 @@
 # NPC Voice Prompt (AGREED v0.4)
 
-_Status: AGREED (matches contracts.md v0.7 §d, `LLMClient.voice_npc`), Nov 10, 2026 (CST). Setting-neutral. Input/output shape: `schemas_proposed.md` §(g). Persona format: `npc_persona_schema.md`._
+_Status: AGREED (matches contracts.md v0.9 §d, `LLMClient.voice_npc`), Nov 10, 2026 (CST). Setting-neutral. Input/output shape: `schemas_proposed.md` §(g). Persona format: `npc_persona_schema.md`._
 
 **Role in pipeline:** player text → interpreter → engine (resolves the talk action, updates disposition, decides `allowed_topics` / trade) → **voice_npc (this prompt)** → `{"lines": ["...", "..."]}` → engine puts lines into `dialogue[]` (`source: "npc_llm"`) → narrator.
 

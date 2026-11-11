@@ -1,6 +1,6 @@
-# NPC Persona Schema (AGREED, matches contracts.md v0.7 §d)
+# NPC Persona Schema (AGREED, matches contracts.md v0.9 §d)
 
-_Status: AGREED (matches contracts.md v0.7 §d), implemented in `rpg/personas.py` + `rpg/talk.py`, Nov 10, 2026 (CST). Setting-neutral. Example: `content/npcs/npc_example_gatekeeper.yaml`. Engine demo personas with the same shape: `code/rpg/data/npcs/npc_mara.yaml`, `npc_dozing_guard.yaml` (engine-owned)._
+_Status: AGREED (matches contracts.md v0.9 §d), implemented in `rpg/personas.py` + `rpg/talk.py`, Nov 10, 2026 (CST). Setting-neutral. Example: `content/npcs/npc_example_gatekeeper.yaml`. Engine demo personas with the same shape: `code/rpg/data/npcs/npc_mara.yaml`, `npc_dozing_guard.yaml` (engine-owned)._
 
 ## Division of labour (decided)
 - **The engine owns facts and disposition.** `npcs.disposition` is an INT from -100 to 100, banded by `rules.disposition_band()`: `hostile` (<= -50), `unfriendly` (<= -10), `neutral`, `friendly` (>= 10), `allied` (>= 50).
@@ -23,6 +23,8 @@ Parsed by `rpg/yamlish.py` (a stdlib YAML subset: block maps and lists, flow `[.
 | `base_disposition` | int | yes | -100..100 → `npcs.disposition` at seed |
 | `combat` | map | no | **Read once at seed** into the `npcs` columns. Keys (any subset, no others): `defense_dc` (int > 0, defense), `max_hp` (int > 0, HP; also resets `current_hp` to full), `attack_bonus` (int, attack), `damage` (dice string, e.g. `"1d6"`), `save_bonus` (int, save). Column defaults otherwise: attack_bonus 2, damage "1d4", save_bonus 0. |
 | `gifts` | map item template key → int 1..50 | no | **Engine-only** (never in context or the voice prompt). What this NPC especially values as a gift, and the disposition gain it gives. Keys must be known templates. See "Gifts" below. |
+| `dark_sound` | string (non-empty) | no | What the player hears of this NPC in the dark (`dark && !lit`), e.g. "slow, heavy breathing and the creak of leather". In the dark the context entry is only `{key: npc_unseen_<id>, visible: false, sound}`: this text and an opaque key go out, never the name, real key, persona, topics or trades. Unset → generic "something breathing nearby" (narrated "Something breathes nearby in the dark."). Describe a sound only: no name, species, or appearance. Validated as a non-empty string (contracts v0.7.1). |
+| `article` | `""` \| `"the"` \| `"a"` \| `"an"` | no | Overrides the narration article rule (a single capitalized word = proper name, no article: "Mara"; multi-word names take "the"). Set it when the name is a one-word role, not a proper name (`name: Gatekeeper` + `article: the` → "the Gatekeeper"). Contracts v0.9 (optional on a result or persona; not validated by the loader). |
 | `social.base_dc` | int | no (default 12) | Base DC for social checks against this NPC |
 | `social.persuasion` / `deception` / `intimidation` / `insight` | int | no (default 0) | DC modifier per skill |
 | `insight_tell` | string | no | What a successful insight check shows the narrator (`insight_read`). Never sent to the voice prompt. |
@@ -85,4 +87,4 @@ Topic keys and trade keys are snake_case and unique within the NPC. Knowledge an
 An auto-success counts as `clear`. Clamp to -100..100 after each change. A band change emits `npc_disposition_changed {key, to}`.
 
 ## Diff against the engine demo personas (v0.7)
-`npc_mara.yaml` and `npc_dozing_guard.yaml` use exactly the fields above (`combat`, coin entries, `repeatable`, `gives[].name`, `aliases` on topics, secrets and trades, `gifts`: Mara values the crowbar +20, the guard rations +15), and both pass the same validator as the gatekeeper example. No field in this schema is unknown to `personas.validate`, and the demo files use no field this schema lacks.
+`npc_mara.yaml` and `npc_dozing_guard.yaml` use exactly the fields above (`combat`, coin entries, `repeatable`, `gives[].name`, `aliases` on topics, secrets and trades, `gifts`: Mara values the crowbar +20, the guard rations +15), and both pass the same validator as the gatekeeper example. No field in this schema is unknown to `personas.validate` (`article` is accepted but not checked), and the demo files use no field this schema lacks.

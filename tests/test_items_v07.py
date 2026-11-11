@@ -339,6 +339,9 @@ def test_noise_without_distraction(w):
 
 
 def test_whistle_falls_back_to_subcategory_signal(w):
-    assert "noise" not in YAML["item_signal_whistle"]["stats"]
+    # v0.9 YAML now carries stats.noise equal to the engine default; omitting it still falls back.
     assert effects.noise_spec({"stats": YAML["item_signal_whistle"]["stats"]}) == effects.DEFAULT_NOISE
+    assert YAML["item_signal_whistle"]["stats"]["noise"] == effects.DEFAULT_NOISE
+    stats = {k: v for k, v in YAML["item_signal_whistle"]["stats"].items() if k != "noise"}
+    assert effects.noise_spec({"stats": stats}) == effects.DEFAULT_NOISE
     assert effects.noise_spec({"stats": {"subcategory": "lever"}}) is None

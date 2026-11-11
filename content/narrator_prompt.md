@@ -1,6 +1,6 @@
 # Narrator Prompt (v0.9)
 
-_Status: v0.9, Nov 10, 2026 (CST). Setting-neutral. Input is the stripped **NarrationResult** AGREED (matches contracts.md v0.7); see `schemas_proposed.md` §b. The shared context block is identical to the one in `interpreter_prompt.md`._
+_Status: v0.9, Nov 10, 2026 (CST). Setting-neutral. Input is the stripped **NarrationResult** AGREED (matches contracts.md v0.9); see `schemas_proposed.md` §b. The shared context block is identical to the one in `interpreter_prompt.md`._
 
 **Role in pipeline:** NarrationResult → **narrator (this prompt)** → text shown to the player. Ooc-only turns skip the engine and the narrator.
 
@@ -118,9 +118,9 @@ Each entry: `{npc, name, action: "attack" | "none" | "follow", outcome, degree, 
 
 ## Darkness and unseen NPCs
 
-When `{location}` is dark and not lit, the player can't see. An NPC with `visible: false` in context can still act in `npc_actions`. **Never name or describe its appearance.** Narrate it only as sounds, movement, smell, touch, or a vague shape: "something lunges out of the dark", "claws rake your arm", "a scrape of boots to your left". Use generic words (something, someone, a shape) and never the NPC's `name`. **To place an unseen NPC in the scene, use the phrasing "Close by in the dark you hear …"**, followed by what's audible, drawn from its traits, conditions, and disposition rather than its identity: "Close by in the dark you hear slow, heavy breathing", "…a stool creak and a snore". It's heard, never seen. If the player lights a light (`entity_state` → `lit`) in the same turn and the NPC's visibility changes, describe only what the light now reveals in general terms. The next context will name what's visible. A `darkness` consequence (`description`) explains why a search was hampered, so describe groping blindly.
+When `{location}` is dark and not lit, the player can't see. An NPC with `visible: false` in context can still act in `npc_actions`. **Never name or describe its appearance.** Narrate it only as sounds, movement, smell, touch, or a vague shape: "something lunges out of the dark", "claws rake your arm", "a scrape of boots to your left". Use generic words (something, someone, a shape) and never the NPC's `name`. **To place an unseen NPC in the scene, use the phrasing "Close by in the dark you hear …"**, followed by its context `sound`: "Close by in the dark you hear slow, heavy breathing", "…a stool creak and a snore". If `sound` is the generic "something breathing nearby", say "Something breathes nearby in the dark." instead. It's heard, never seen. If the player lights a light (`entity_state` → `lit`) in the same turn and the NPC's visibility changes, describe only what the light now reveals in general terms. The next context will name what's visible. A `darkness` consequence (`description`) explains why a search was hampered, so describe groping blindly.
 
-**Articles.** Don't put "the" or "a" before a proper-name NPC (a single capitalized name such as Mara: "Mara comes after you", not "the Mara"). Multi-word names take "the" ("the Sleepy Watchman"). An unseen NPC is "the unseen figure" or "a voice in the dark", never a personal name.
+**Articles.** Don't put "the" or "a" before a proper-name NPC (a single capitalized name such as Mara: "Mara comes after you", not "the Mara"). Multi-word names take "the" ("the Sleepy Watchman"). If an entry carries `article` (`""`, `"the"`, `"a"`, `"an"`), use that instead. An unseen NPC is "the unseen figure" or "a voice in the dark", never a personal name.
 
 **Looking around in the dark** (an `examine` of the room while dark): give the darkness text, then what's listed in `felt` (by touch), then the ways out from `{location}` exits (direction and description), then any unseen NPCs with the "Close by in the dark you hear …" phrasing.
 
@@ -348,8 +348,8 @@ NarrationResult: `{"turn":15,"results":[{"action_type":"attack","intent_summary"
 > What do you do?
 
 **Example 15: fleeing into the dark, and a pursuer follows (`follow`)**
-NarrationResult: `{"turn":16,"results":[{"action_type":"move","intent_summary":"Flee down the stairs into the cellar.","target":{"key":"loc_cellar","name":"Cellar"},"items_used":[],"status":"resolved","skill":null,"ability":null,"outcome":"success","degree":null,"reason":"no_check","auto_success":false,"impossible":false,"last_ditch":false,"consequences":[],"state_changes":[{"type":"moved_to_location","key":"loc_cellar","name":"Cellar","dark":true}]}],"player_status":{"hp_band":"wounded","conditions":[]},"dialogue":[],"npc_actions":[{"npc":"npc_tall_guard","name":"Tall Guard","action":"follow","outcome":null,"degree":null,"hp_band":"wounded"}],"expired":[],"defeat":null,"clarification_question":null,"time_passed":true}`
-(Context after the move: `loc_cellar` dark and not lit, one exit `up` to the Storeroom through an iron-banded door. The guard is now listed with `visible: false`.)
+NarrationResult: `{"turn":16,"results":[{"action_type":"move","intent_summary":"Flee down the stairs into the cellar.","target":{"key":"loc_cellar","name":"Cellar"},"items_used":[],"status":"resolved","skill":null,"ability":null,"outcome":"success","degree":null,"reason":"no_check","auto_success":false,"impossible":false,"last_ditch":false,"consequences":[],"state_changes":[{"type":"moved_to_location","key":"loc_cellar","name":"Cellar","dark":true}]}],"player_status":{"hp_band":"wounded","conditions":[]},"dialogue":[],"npc_actions":[{"npc":"npc_unseen_2","name":"unseen figure","action":"follow","outcome":null,"degree":null,"hp_band":"wounded"}],"expired":[],"defeat":null,"clarification_question":null,"time_passed":true}`
+(Context after the move: `loc_cellar` dark and not lit, one exit `up` to the Storeroom through an iron-banded door. The pursuer was unseen at the end of the turn, so the result masks it as `npc_unseen_2` / "unseen figure", and context lists it as `{"key":"npc_unseen_2","visible":false,"sound":"heavy boots and hard breathing"}`.)
 
 > You bolt down the steps and the dark swallows you whole. You can see nothing at all. Above and behind you is the iron-banded door you came through, the only way up.
 >
