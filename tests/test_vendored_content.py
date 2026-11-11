@@ -49,3 +49,16 @@ def test_drift_detector_sees_changes(tmp_path):
     (up / "new.md").write_text("x")
     d = drift_mod.drift(str(up))
     assert d["changed"] == ["README.md"] and d["added"] == ["new.md"]
+
+
+def test_system_prompts_do_not_name_demo_npcs():
+    """Static examples must not teach a live model the demo names (Dozing Guard / Giant Rat)."""
+    from rpg import prompts
+    prompts.template.cache_clear()
+    banned = ("npc_dozing_guard", "Dozing Guard", "npc_cellar_rat", "Giant Rat")
+    for kind in ("interpret", "narrate", "voice"):
+        system, _section = prompts.template(kind)
+        for needle in banned:
+            assert needle not in system, f"{kind} system prompt contains {needle!r}"
+        # Player-input section still has the placeholder; the engine fences the value.
+        assert "{player_text}" in _section

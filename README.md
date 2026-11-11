@@ -67,7 +67,7 @@ mara`) or a story event takes them further. `trade` alone lists the deals;
 
 Gear (contracts v0.7): a rope helps you climb (athletics moves, or when you use it); worn work gloves help
 with climbing and rough or sharp things; a worn leather cap shrugs off one daze or stun per rest; blowing a
-signal whistle is heard next door and throws a hostile off its next swing (once per foe). (A template's `stats.noise` can change that.) In the dark you never learn who is there, only what you hear (a persona's `dark_sound`); `attack it` / `talk to whoever is there` still work.
+signal whistle is heard next door and throws a hostile off its next swing (once per foe). (A template's `stats.noise` can change that.) In the dark you never learn who is there, only what you hear (a persona's `dark_sound`); `attack it` / `talk to whoever is there` / `give the rations to it` still work. Naming them (`attack the guard`) is a free question by sound, not a wasted round, and does not confirm who they are.
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
@@ -180,7 +180,7 @@ don't edit either from here). `tests/test_vendored_content.py` runs `tools/valid
 if the copy drifts; `python3 tools/check_content_drift.py --sync` re-copies.
 
 ## Turn API
-See `docs/contracts.md` (v0.6) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.9) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db
