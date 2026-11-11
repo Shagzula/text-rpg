@@ -473,8 +473,8 @@ class Turn:
                                  (self.loc_id,)).fetchall()
 
     def unseen_name_question(self, verb: str = "attack") -> str:
-        """v0.9: the player named someone they can only hear. Never confirm the name;
-        ask by sound. Free (clarify), even when only one NPC is here."""
+        """The player named someone they can only hear, and more than one unseen NPC
+        is here: never confirm the name; ask by sound."""
         names = [f"the one making {unseen.sound(self.conn, n)}" for n in self._npcs_here()]
         if len(names) == 1:
             return f"You can't tell who that is in the dark. Do you mean {names[0]}?"
@@ -984,11 +984,19 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     hidden = unseen.unseen_npcs(conn, character_id)  # v0.7.1: unseen at the start of the turn...
     named_in_dark = set()
     raw_targets = [a.get("target") for a in prop["actions"]]
+    living = unseen.living_unseen(conn, character_id)
     for i, a in enumerate(prop["actions"]):
-        # v0.9: a real key or a name-like slug for an unseen NPC is not resolved
-        # (that would confirm who they are) and becomes a free clarify by sound.
-        if unseen.named_in_dark(conn, character_id, a.get("target")):
-            named_in_dark.add(i)
+        # v0.10.1: a remembered name or real/invented npc_ key in the dark, with exactly
+        # one unseen NPC, resolves to that NPC's opaque ref (name never confirmed).
+        # With several, ask by sound and do not resolve.
+        if unseen.named_or_slugged_in_dark(conn, character_id, a.get("target")):
+            if len(living) == 1:
+                only = next(iter(living.values()))
+                a["target"] = only["ref"]
+                a["intent_summary"] = unseen.sound_intent(
+                    a.get("action_type"), only.get("sound"), a.get("items_used"))
+            elif len(living) > 1:
+                named_in_dark.add(i)
         a["target"] = unseen.resolve(conn, a["target"])  # opaque refs target the NPC behind them
     clarify_action = None
     clarify_signature = None

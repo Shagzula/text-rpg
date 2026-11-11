@@ -11,6 +11,8 @@ import os
 import re
 from typing import Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
+from . import unseen as unseen_mod
+
 CLOSING_LINE = "What do you do?"
 WASTED_ROUND_LINE = "You lose precious moments, and your foe doesn't wait."
 FALLBACK_NARRATION = "The moment passes in a blur, and the details are hard to make out."
@@ -234,6 +236,7 @@ class MockLLM:
     # -- interpreter ----------------------------------------------------------
     def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
         check_input_length(player_text)
+        self._context = context
         # drop emoji and other symbols (BUG-13); keep letters, digits and light punctuation
         text = " ".join(re.sub(r"[^\w\s'.,!?;-]", " ", player_text).strip().lower().split())
         last_ditch = False
@@ -276,7 +279,7 @@ class MockLLM:
                 rest = ""
             if rest:
                 key, amb = self._match(rest, context, ("npc", "item", "inv", "exit", "loc"), "item")
-                self._apply_target(action, key, amb, rest, refs)
+                self._apply_target(action, key, amb, rest, refs, context)
                 action["intent_summary"] = f"Feel for the {rest}." if touch else f"Examine the {rest}."
             else:
                 action["target"] = (context.get("location") or {}).get("key")
@@ -291,21 +294,21 @@ class MockLLM:
                 summary = "Go back." if direction == "back" else f"Go {direction}."
             else:
                 key, amb = self._match(rest, context, ("exit",), "loc")
-                self._apply_target(action, key, amb, rest, refs)
+                self._apply_target(action, key, amb, rest, refs, context)
                 summary = f"Go to the {rest}."
             action.update(action_type="move", est_difficulty="trivial", intent_summary=summary)
         elif verb in ("take", "drop", "equip", "unequip"):
             pools = {"take": ("item",), "drop": ("inv",), "equip": ("inv",), "unequip": ("inv",)}[verb]
             key, amb = self._match(rest, context, pools, "item")
             if amb:
-                self._apply_target(action, None, amb, rest, refs)
+                self._apply_target(action, None, amb, rest, refs, context)
             else:
                 action["items_used"] = [key]
             action.update(action_type=verb, est_difficulty="trivial", intent_summary=f"{verb.capitalize()} the {rest}.")
         elif verb == "attack":
             target_txt, _, weapon_txt = rest.partition(" with ")
             key, amb = self._match(target_txt, context, ("npc", "item"), "npc")
-            self._apply_target(action, key, amb, target_txt, refs)
+            self._apply_target(action, key, amb, target_txt, refs, context)
             if weapon_txt:
                 wkey, _ = self._match(weapon_txt, context, ("inv", "item"), "item")
                 action["items_used"] = [wkey]
@@ -320,13 +323,13 @@ class MockLLM:
                 item_txt = rest.partition(" at ")[0]
             key, amb = self._match(item_txt, context, ("inv", "item"), "item")
             if amb:
-                self._apply_target(action, None, amb, item_txt, refs)
+                self._apply_target(action, None, amb, item_txt, refs, context)
             else:
                 action["items_used"] = [key]
             on_txt = on_txt or (rest.partition(" at ")[2])  # "throw powder at guard"
             if on_txt:
                 tkey, tamb = self._door_target(on_txt, context, ("exit", "npc", "item"))
-                self._apply_target(action, tkey, tamb, on_txt, refs)
+                self._apply_target(action, tkey, tamb, on_txt, refs, context)
                 if any(e["to"] == tkey for e in (context.get("location") or {}).get("exits", [])):
                     # lockpicks pick, anything else pries (the engine decides from the tool's stats)
                     action["skill"] = "sleight_of_hand" if "lock" in item_txt else "athletics"
@@ -343,7 +346,7 @@ class MockLLM:
             exits = (context.get("location") or {}).get("exits", [])
             if not rest or rest in ("lock", "door", "the lock", "the door"):
                 rest = next((e.get("description") or e["to_name"] for e in exits if e["to"] == key), rest)
-            self._apply_target(action, key, amb, rest or "door", refs)
+            self._apply_target(action, key, amb, rest or "door", refs, context)
             skill = "sleight_of_hand" if verb == "pick" else "athletics"
             action.update(action_type="skill_check", skill=skill,
                           intent_summary=f"{'Pick the lock on' if verb == 'pick' else 'Force open'} the {rest or 'door'}.")
@@ -351,6 +354,7 @@ class MockLLM:
             self._talk(text, rest, context, action, refs)
         if last_ditch:
             action["intent_summary"] = action["intent_summary"].rstrip(".") + ", desperately, whatever it costs."
+        self._rewrite_unseen_intent(action, context)
         _fill_action_fields(action)
         return {"actions": [action], "ooc": None, "unresolved_references": refs}
 
@@ -393,7 +397,7 @@ class MockLLM:
         key, amb = (self._match(npc_txt, context, ("npc",), "npc") if npc_txt else (None, []))
         if not npc_txt and len(npcs) == 1:
             key = npcs[0]["key"]
-        self._apply_target(action, key, amb, npc_txt or "them", refs)
+        self._apply_target(action, key, amb, npc_txt or "them", refs, context)
         npc = next((n for n in context.get("npcs_present", []) if n["key"] == action["target"]), None)
         quantity = None
         if approach == "trade" and subject:
@@ -505,6 +509,14 @@ class MockLLM:
             if score:
                 scored.append((score, key))
         if not scored:
+            # v0.10.1: a name that isn't in context, with unseen NPCs present, targets the
+            # one opaque ref or asks by sound when there are several (never invent a slug).
+            if prefix == "npc":
+                dark = [n for n in context.get("npcs_present", []) if not n.get("visible", True)]
+                if len(dark) == 1:
+                    return dark[0]["key"], []
+                if len(dark) > 1:
+                    return None, sorted(n["key"] for n in dark)
             return f"{prefix}_{_slug(phrase)}", []
         best = max(s for s, _ in scored)
         top = sorted({k for s, k in scored if s == best})
@@ -513,14 +525,40 @@ class MockLLM:
         return top[0], []
 
     @staticmethod
-    def _apply_target(action, key, ambiguous, phrase, refs):
+    def _apply_target(action, key, ambiguous, phrase, refs, context=None):
         if ambiguous:
             refs.append(phrase)
             action["clarification_needed"] = True
-            noun = (re.findall(r"[a-z0-9]+", phrase.lower()) or ["one"])[-1]
-            action["clarification_question"] = f"Which {noun} do you mean?"
+            dark = [n for n in (context or {}).get("npcs_present", []) if not n.get("visible", True)]
+            dark_keys = {n["key"] for n in dark}
+            if dark and ambiguous and set(ambiguous) <= dark_keys:
+                sounds = [n.get("sound") or "something nearby" for n in dark]
+                if len(sounds) == 1:
+                    action["clarification_question"] = (
+                        f"You can't tell who that is in the dark. Do you mean the one making {sounds[0]}?")
+                else:
+                    action["clarification_question"] = (
+                        "Who do you mean: " + ", ".join(f"the one making {s}" for s in sounds[:-1])
+                        + " or the one making " + sounds[-1] + "?")
+            else:
+                noun = (re.findall(r"[a-z0-9]+", phrase.lower()) or ["one"])[-1]
+                action["clarification_question"] = f"Which {noun} do you mean?"
         else:
             action["target"] = key
+
+    def _rewrite_unseen_intent(self, action: Dict, context: Dict) -> None:
+        """Don't leak a remembered name in intent_summary when the target is unseen."""
+        target = action.get("target")
+        npc = next((n for n in context.get("npcs_present", [])
+                    if n.get("key") == target and n.get("visible") is False), None)
+        if not npc or action.get("clarification_needed"):
+            return
+        summary = (action.get("intent_summary") or "").lower()
+        sound = npc.get("sound") or ""
+        if "unseen" in summary or (sound and sound.lower() in summary):
+            return
+        action["intent_summary"] = unseen_mod.sound_intent(
+            action.get("action_type"), sound, action.get("items_used"))
 
     def _pending_reply(self, text: str, context: Dict):
         """Verb-less answers to a pending dark-room clarify: 'yes' (one candidate) or a sound phrase."""

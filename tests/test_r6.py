@@ -257,15 +257,22 @@ def test_fence_player_text_escapes_breakout_and_drops_the_duplicate_note():
 
 # --- R6-02 stall cap + pending replies -----------------------------------------
 
-def test_second_same_named_clarify_in_dark_combat_costs_the_round(dark_guard):
+def _two_unseen(dark_guard):
+    """Several unseen NPCs so a remembered name still clarifies (v0.10.1)."""
+    put(dark_guard[0], "npc_mara", "loc_cellar")
     hostile_guard(dark_guard)
+
+
+def test_second_same_named_clarify_in_dark_combat_costs_the_round(dark_guard):
+    _two_unseen(dark_guard)
     r1, out1 = say(dark_guard, "attack the guard", 1, 1)
     assert r1["results"][0]["status"] == "clarify"
     assert r1.get("wasted_round") is not True and r1["time_passed"] is False
     assert r1["npc_actions"] == []
     r2, out2 = say(dark_guard, "attack the guard", 1, 1)
     assert r2["results"][0]["status"] == "clarify"
-    assert "can't tell who that is in the dark" in (r2["clarification_question"] or "").lower()
+    q = (r2["clarification_question"] or out2).lower()
+    assert "making" in q or "breathing" in q
     assert r2.get("wasted_round") is True and r2["time_passed"] is True
     assert r2["npc_actions"]
     assert "You lose precious moments" in out2 or r2["wasted_round"]
@@ -273,29 +280,31 @@ def test_second_same_named_clarify_in_dark_combat_costs_the_round(dark_guard):
 
 def test_pending_clarify_yes_and_sound_carry_out_the_original_action(dark_guard):
     conn, cid = dark_guard
-    hostile_guard(dark_guard)
+    _two_unseen(dark_guard)
     conn.execute("UPDATE npcs SET current_hp = max_hp WHERE key = 'npc_dozing_guard'")
     hp = conn.execute("SELECT current_hp FROM npcs WHERE key = 'npc_dozing_guard'").fetchone()[0]
     r, _ = say(dark_guard, "attack the guard")
     assert r["results"][0]["status"] == "clarify"
     pending = context.build_context(conn, cid)["pending_clarify"]
     assert pending["action_type"] == "attack"
-    assert pending["candidates"] and pending["candidates"][0]["key"].startswith("npc_unseen_")
-    assert "name" not in pending["candidates"][0]
-    r, out = say(dark_guard, "yes", 20, 6, 1, 1, 1)
+    assert len(pending["candidates"]) == 2
+    assert all(c["key"].startswith("npc_unseen_") and "name" not in c for c in pending["candidates"])
+
+    # Sound phrase (no verb) picks the matching candidate and follows through.
+    r, out = say(dark_guard, "the breathing", 20, 6, 1, 1, 1)
     res = r["results"][0]
     assert res["status"] == "resolved" and res["action_type"] == "attack"
-    assert res["target"]["key"].startswith("npc_unseen_")
+    assert res["target"]["key"] == f"npc_unseen_{npc_id(conn, 'npc_dozing_guard')}"
     assert conn.execute("SELECT current_hp FROM npcs WHERE key = 'npc_dozing_guard'").fetchone()[0] < hp
-    assert leaks(out, conn, "npc_dozing_guard") is None
+    assert leaks(out, conn, "npc_dozing_guard", "npc_mara") is None
 
-    # A fresh clarify, then a sound-phrase reply (no verb) also follows through.
-    conn.execute("UPDATE npcs SET current_hp = max_hp, alive = 1 WHERE key = 'npc_dozing_guard'")
-    r, _ = say(dark_guard, "attack the guard")
-    assert r["results"][0]["status"] == "clarify"
-    r, out = say(dark_guard, "the breathing", 20, 6, 1, 1, 1)
-    assert r["results"][0]["status"] == "resolved" and r["results"][0]["action_type"] == "attack"
-    assert r["results"][0]["target"]["key"].startswith("npc_unseen_")
+    # 'yes' still completes a pending clarify when there is exactly one candidate.
+    one = {"action_type": "attack", "skill": "str", "items_used": [], "last_ditch": False,
+           "intent_summary": "Attack the unseen thing.", "candidates": [pending["candidates"][0]]}
+    p = llm_mod.MockLLM().interpret("yes", {**context.build_context(conn, cid), "pending_clarify": one})
+    assert p["actions"][0]["target"] == pending["candidates"][0]["key"]
+    assert p["actions"][0]["action_type"] == "attack"
+    assert not p["actions"][0]["clarification_needed"]
 
 
 def test_fifth_consecutive_free_turn_in_combat_is_a_wasted_round(demo):
@@ -316,12 +325,13 @@ def test_fifth_consecutive_free_turn_in_combat_is_a_wasted_round(demo):
     ("lit", "asdfzxcvqwerty"),
     ("lit", "attack"),  # several NPCs here: a who-clarify
     ("dark", "asdfzxcvqwerty"),
-    ("dark", "attack the guard"),
+    ("dark", "attack the guard"),  # several unseen NPCs: a named clarify
 ])
 def test_stall_invariant_free_input_in_combat_eventually_costs_a_round(demo, room, text):
     conn, cid = demo
     if room == "dark":
         put(conn, "npc_dozing_guard", "loc_cellar")
+        put(conn, "npc_mara", "loc_cellar")
         go(demo, "loc_cellar")
     else:
         go(demo, "loc_storeroom")

@@ -45,12 +45,11 @@ def named_in_dark(conn, character_id: int, raw_key: Optional[str]) -> bool:
     """True if `raw_key` is a real key or a name-like slug for a living unseen NPC here.
 
     Opaque `npc_unseen_<id>` refs do not count: those are the supported way to target
-    someone you can only hear. Referring to them by name must not resolve (that would
-    confirm who they are) and must not waste a combat round (v0.9).
+    someone you can only hear.
     """
     if not raw_key or is_ref(raw_key):
         return False
-    hidden = {k: v for k, v in unseen_npcs(conn, character_id).items() if v.get("alive")}
+    hidden = living_unseen(conn, character_id)
     if not hidden:
         return False
     if raw_key in hidden:
@@ -62,6 +61,37 @@ def named_in_dark(conn, character_id: int, raw_key: Optional[str]) -> bool:
         if want & (_name_words(info.get("name") or "") | _name_words(key)):
             return True
     return False
+
+
+def named_or_slugged_in_dark(conn, character_id: int, raw_key: Optional[str]) -> bool:
+    """A remembered name, real npc_ key, or invented npc_ slug used in a dark room.
+
+    v0.10.1: with exactly one living unseen NPC this should resolve to that NPC's
+    opaque ref (never confirming the name). With several, the engine asks by sound.
+    """
+    if not raw_key or is_ref(raw_key):
+        return False
+    if not living_unseen(conn, character_id):
+        return False
+    if named_in_dark(conn, character_id, raw_key):
+        return True
+    return isinstance(raw_key, str) and raw_key.startswith("npc_")
+
+
+def living_unseen(conn, character_id: int) -> Dict[str, Dict]:
+    return {k: v for k, v in unseen_npcs(conn, character_id).items() if v.get("alive")}
+
+
+def sound_intent(action_type: Optional[str], sound: str, items_used=None) -> str:
+    """An intent_summary that describes the unseen NPC by sound, never by name."""
+    thing = f"the unseen thing making {sound or GENERIC_SOUND}"
+    if action_type == "talk":
+        return f"Talk to {thing}."
+    if action_type == "attack":
+        return f"Attack {thing}."
+    if items_used:
+        return f"Use what you're holding on {thing}."
+    return f"Act on {thing}."
 
 
 def unseen_npcs(conn, character_id: int) -> Dict[str, Dict]:

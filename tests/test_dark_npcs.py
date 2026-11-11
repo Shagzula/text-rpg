@@ -109,9 +109,15 @@ def test_attacking_the_unseen_by_sound_hits_the_npc(dark_guard, text):
     assert leaks(r, conn, "npc_dozing_guard") is None and leaks(out, conn, "npc_dozing_guard") is None
 
 
-def test_named_target_in_the_dark_is_not_resolved_by_name_in_the_mock(dark_guard):
-    p = llm_mod.MockLLM().interpret("attack the guard", build_context(*dark_guard))
-    assert not p["actions"][0]["target"].startswith("npc_unseen_")  # the name isn't known in the dark
+def test_named_target_in_the_dark_with_one_unseen_uses_the_opaque_ref(dark_guard):
+    """v0.10.1: a remembered name with exactly one unseen NPC targets its npc_unseen key."""
+    ctx = build_context(*dark_guard)
+    p = llm_mod.MockLLM().interpret("attack the guard", ctx)
+    assert p["actions"][0]["target"].startswith("npc_unseen_")
+    assert p["actions"][0]["target"] == ctx["npcs_present"][0]["key"]
+    assert not p["actions"][0]["clarification_needed"]
+    assert "Dozing Guard" not in (p["actions"][0].get("intent_summary") or "")
+    assert "guard" not in (p["actions"][0].get("intent_summary") or "").lower()
 
 
 def test_talking_in_the_dark_voices_without_a_name(demo):  # noqa: F811
@@ -178,9 +184,59 @@ def test_gift_intent_summary_does_not_need_a_name(dark_guard):
     assert "Dozing Guard" not in (p["actions"][0].get("intent_summary") or "")
 
 
+@pytest.mark.parametrize("text", ["attack the guard", "attack the dozing guard", "attack the dragon"])
+def test_naming_the_only_unseen_npc_resolves_without_confirming_the_name(dark_guard, text):
+    """v0.10.1: with exactly one unseen NPC, a remembered (or unmatched) name hits that opaque ref."""
+    conn, cid = dark_guard
+    hostile_guard(dark_guard)
+    conn.execute("UPDATE npcs SET current_hp = max_hp WHERE key = 'npc_dozing_guard'")
+    hp = conn.execute("SELECT current_hp FROM npcs WHERE key = 'npc_dozing_guard'").fetchone()[0]
+    r, out = say(dark_guard, text, 20, 6, 1, 1, 1)
+    res = r["results"][0]
+    assert res["status"] == "resolved"
+    assert res["target"]["key"].startswith("npc_unseen_")
+    assert res["target"]["name"] == unseen.UNSEEN_NAME
+    assert "article" not in (res.get("target") or {})
+    assert conn.execute("SELECT current_hp FROM npcs WHERE key = 'npc_dozing_guard'").fetchone()[0] < hp
+    assert leaks(r, conn, "npc_dozing_guard") is None
+    assert leaks(out, conn, "npc_dozing_guard") is None
+
+
+def test_real_key_for_the_only_unseen_npc_resolves_to_the_opaque_ref(dark_guard):
+    conn, cid = dark_guard
+    hostile_guard(dark_guard)
+    r = actions.process_action_proposal(
+        conn, cid,
+        {"actions": [{"action_type": "attack", "skill": "str", "target": "npc_dozing_guard",
+                      "items_used": [], "last_ditch": False, "est_difficulty": "medium",
+                      "intent_summary": "Attack the guard.", "clarification_needed": False,
+                      "clarification_question": None, "approach": None, "topic": None,
+                      "topic_text": None, "quantity": None}],
+         "ooc": None, "unresolved_references": []},
+        rng=__import__("random").Random(1),
+    )
+    res = r["results"][0]
+    assert res["status"] == "resolved"
+    assert res["target"]["key"].startswith("npc_unseen_")
+    assert res["target"]["name"] == unseen.UNSEEN_NAME
+    assert leaks(r, conn, "npc_dozing_guard") is None
+    assert "Attack the guard" not in (res.get("intent_summary") or "")
+
+
+def test_a_name_that_matches_nobody_in_an_empty_dark_room_is_still_rejected(dark_guard):
+    conn, cid = dark_guard
+    put(conn, "npc_dozing_guard", "loc_storeroom")
+    r, out = say(dark_guard, "attack the dragon")
+    assert r["results"][0]["status"] == "rejected" and r["results"][0]["detail"] == "unknown_key"
+    assert r.get("wasted_round") is not True  # nobody hostile here
+    assert leaks(out, conn, "npc_dozing_guard") is None
+
+
 @pytest.mark.parametrize("text", ["attack the guard", "attack the dozing guard"])
-def test_naming_an_unseen_npc_is_a_free_clarify_by_sound(dark_guard, text):
-    """v0.9: naming someone you can only hear does not resolve and does not waste the round."""
+def test_naming_an_unseen_npc_among_several_is_a_clarify_by_sound(dark_guard, text):
+    """v0.10.1: several unseen NPCs, a remembered name asks by sound and does not resolve."""
+    conn, cid = dark_guard
+    put(conn, "npc_mara", "loc_cellar")
     hostile_guard(dark_guard)
     r, out = say(dark_guard, text, 20, 6)
     res = r["results"][0]
@@ -188,36 +244,9 @@ def test_naming_an_unseen_npc_is_a_free_clarify_by_sound(dark_guard, text):
     assert r.get("wasted_round") is not True and r["time_passed"] is False
     assert r["npc_actions"] == []
     q = r["clarification_question"] or out
-    assert "can't tell who that is in the dark" in q.lower()
-    assert "breathing" in q
-    # The player's own words may contain "guard"; the question and narration must not name them.
-    assert leaks(q, dark_guard[0], "npc_dozing_guard") is None
-    assert leaks(out, dark_guard[0], "npc_dozing_guard") is None
-
-
-def test_real_key_for_an_unseen_npc_is_also_a_free_clarify(dark_guard):
-    conn, cid = dark_guard
-    hostile_guard(dark_guard)
-    r = actions.process_action_proposal(
-        conn, cid,
-        {"actions": [{"action_type": "attack", "skill": None, "target": "npc_dozing_guard",
-                      "items_used": [], "last_ditch": False, "est_difficulty": "medium",
-                      "intent_summary": "Attack the guard.", "clarification_needed": False,
-                      "clarification_question": None}],
-         "ooc": None, "unresolved_references": []},
-        rng=__import__("random").Random(1),
-    )
-    assert r["results"][0]["status"] == "clarify"
-    assert r.get("wasted_round") is not True and r["npc_actions"] == []
-    assert leaks(r["clarification_question"] or "", conn, "npc_dozing_guard") is None
-
-
-def test_a_name_that_matches_nobody_here_still_wastes_the_round(dark_guard):
-    hostile_guard(dark_guard)
-    r, out = say(dark_guard, "attack the dragon", 20, 6)
-    assert r["results"][0]["status"] == "rejected" and r["results"][0]["detail"] == "unknown_key"
-    assert r.get("wasted_round") is True and r["npc_actions"]
-    assert leaks(out, dark_guard[0], "npc_dozing_guard") is None
+    assert "breathing" in q.lower() or "muttering" in q.lower() or "making" in q.lower()
+    assert leaks(q, conn, "npc_dozing_guard", "npc_mara") is None
+    assert leaks(out, conn, "npc_dozing_guard", "npc_mara") is None
 
 
 def test_live_prompt_paths_accept_a_nameless_unseen_payload(dark_guard):
