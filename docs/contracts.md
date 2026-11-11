@@ -1,4 +1,4 @@
-# JSON contracts (v0.6)
+# JSON contracts (v0.6.1)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -457,6 +457,19 @@ when `topic` is null). `validate_proposal()` keeps them; non-talk actions never 
   `impossible_action` / `no_new_leverage` (no roll, no time outside combat) unless at least 10 turns have
   passed (`RETRY_TURNS`), the NPC's disposition changed since, or `items_used` includes something not used
   before. A different approach or subject is a new try.
+  - v0.6.1 **subject** (BUG-R3-02): only a real topic or trade key of this NPC is a subject. A `topic` that
+    isn't one, or `topic: null` with any `topic_text` (a paraphrase such as "what's down below"), is the
+    **same subject as the last attempt** with that NPC and approach (world flag
+    `social_last:<npc>:<approach>`), or the generic subject `""` if there was none. A different string alone
+    never unlocks a retry.
+  - v0.6.1 **cited topic as leverage** (design: it must be referenced, so the engine can check it): when
+    `topic` is the subject key, `topic_text` may name a topic the player has learned (from **any** NPC) by its
+    key, key with spaces, an alias or a label segment ("/"-split), exact after lowercasing, dropping
+    punctuation and one leading determiner. If it names a topic revealed **since the last attempt** (the try
+    flag stores the revealed set at that time) and not the subject itself, that's new leverage. A topic
+    learned but not cited does not count; citing the same one twice doesn't either. Interpreter shape:
+    "persuade Mara about the cellar, now that I know about his post" -> `topic: "the_cellar"`,
+    `topic_text: "his post"`; "... with the rations" -> `items_used: ["item_rations"]`.
 - v0.6 **DECIDED** **social cap at friendly**: a positive disposition change from a social check (persuade,
   deceive) never takes the NPC above 49 (top of `friendly`); `allied` is only reachable by other means
   (quests, story events; trades' +2 is not a social check). An NPC already above 49 is never lowered by it.
@@ -526,6 +539,14 @@ falls back to indirect speech).
 9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
+
+## Changes in v0.6.1
+1. BUG-R3-01 (Lead): `unrecognized` input never wastes a round, even in combat; only parsed-but-rejected
+   actions do (time-passing table).
+2. BUG-R3-02: paraphrased subjects fold into the last subject for the no-retry rule.
+3. New leverage: citing (via `topic_text` next to the subject `topic`) a topic revealed since the last try.
+4. Content re-synced to the Story Designer's v0.6 (8 files); its inline snippets are now all JSON.
+5. `look` in the dark lists the felt items (see context).
 
 ## Changes since v0.5
 Retest of 9127044 (`playtest/2026-11-10-retest-9127044.md`):

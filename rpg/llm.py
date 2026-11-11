@@ -126,6 +126,11 @@ TALK_SUMMARY = {"ask": "Ask the {npc}{about}.", "persuade": "Try to persuade the
                 "deceive": "Try to deceive the {npc}{about}.", "intimidate": "Try to intimidate the {npc}{about}.",
                 "insight": "Study the {npc} for what they are hiding{about}.", "small_talk": "Chat with the {npc}.",
                 "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}."}
+# v0.6.1 leverage in social talk: "..., now that I know about X" cites a topic (topic_text next to the topic);
+# "... with / offering / showing her the X" presents a held item (items_used).
+CITE_RE = re.compile(r"\s*,?\s*\b(?:now that i know about|since i know about|now i know about|citing|mentioning|"
+                     r"pointing out|because of what i learned about|given what i know about)\s+(.+)$")
+OFFER_RE = re.compile(r"\s+(?:with|offering|showing (?:her|him|them) |showing|holding out)\s+(.+)$")
 SUBJECT_SPLITS = (" about ", " regarding ", " for ", " into ", " that ", " to tell me about ", " to tell me ")
 SEARCH_WORDS = ("search", "rummage")  # an investigation check
 TOUCH_WORDS = ("feel", "grope")        # the touch path: no roll
@@ -299,6 +304,16 @@ class MockLLM:
         quantity = None
         if approach == "trade" and subject:
             quantity, subject = _split_quantity(subject)
+        cite, offered = None, []
+        if approach in ("persuade", "deceive", "intimidate", "insight") and subject:
+            m = CITE_RE.search(subject)
+            if m:
+                cite, subject = m.group(1).strip(" .!?"), subject[:m.start()].strip()
+            m = OFFER_RE.search(subject)
+            if m:
+                ikey, iamb = self._match(m.group(1), context, ("inv",), "item")
+                if ikey and not iamb and any(i["key"] == ikey for i in context.get("player_inventory", [])):
+                    offered, subject = [ikey], subject[:m.start()].strip()
         topic, topic_text = None, (_strip_articles(subject) or None) if subject else None
         if npc and subject:
             # BUG-R2-06: only exact key / label / alias (or traded item name) matches, no loose overlap
@@ -315,14 +330,20 @@ class MockLLM:
                 topic, topic_text = hit, None
         if approach in ("small_talk", "farewell"):
             topic, topic_text = None, None
+        if cite and topic:  # the subject is a real topic: the cited phrase rides along as leverage
+            topic_text = cite
+        if offered:
+            action["items_used"] = offered
         name = npc["name"] if npc else (npc_txt or "them")
-        about = f" about {topic_text or subject}" if (topic_text or subject) and approach != "trade" else \
+        about = f" about {subject if cite else (topic_text or subject)}" if (topic_text or subject) and \
+            approach != "trade" else \
             (f" for {subject}" if subject else "")
         if quantity is not None:
             action["quantity"] = quantity
         action.update(action_type="talk", skill=TALK_SKILL.get(approach), est_difficulty="medium",
                       approach=approach, topic=topic, topic_text=topic_text,
-                      intent_summary=TALK_SUMMARY[approach].format(npc=name, about=about[:60]))
+                      intent_summary=TALK_SUMMARY[approach].replace("the {npc}", "{npc}" if " " not in name
+                                                                    else "the {npc}").format(npc=name, about=about[:60]))
 
     def _door_target(self, phrase: str, context: Dict, pools):
         """Match a door-ish phrase; "the door"/"the lock" prefers the one locked exit, then

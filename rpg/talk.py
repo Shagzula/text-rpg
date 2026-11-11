@@ -33,6 +33,8 @@ MAX_TRADE_QTY = 10  # a trade may be repeated up to this many times in one actio
 RETRY_TURNS = 10        # a blocked social retry opens up again after this many turns
 SOCIAL_CAP = 49         # persuasion/deception alone can't lift disposition into allied (>= 50)
 SOCIAL_TRY_FLAG = "social_try:"
+SOCIAL_LAST_FLAG = "social_last:"  # last subject per NPC + approach (paraphrases fold into it, BUG-R3-02)
+DETERMINERS = ("the ", "a ", "an ", "my ", "his ", "her ", "their ", "your ", "its ", "some ")
 
 
 class TalkReject(Exception):
@@ -148,14 +150,18 @@ def resolve(turn, a: Dict, t) -> Dict:
         _precheck_trade(turn, a, t, p, before)  # BUG-R2-02/03/04: rejections cost nothing
     check = None
     try_key = None
+    known_now = all_revealed(conn)
     if skill:
-        # 5e no-retry rule (v0.6): the same approach on the same NPC and subject can't be rolled again
-        # until something changes: a new topic, an item offered, the NPC's disposition moved by
-        # something else, or RETRY_TURNS turns passing.
-        subject = a["topic"] or " ".join(str(a["topic_text"] or "").lower().split())
+        # 5e no-retry rule (v0.6/v0.6.1): the same approach on the same NPC and subject can't be rolled
+        # again until something changes (see _new_leverage). The subject is a real topic/trade key of
+        # this NPC; anything else (a paraphrase, free text) is the same subject as the last attempt.
+        last_key = f"{SOCIAL_LAST_FLAG}{t.key}:{approach}"
+        subject = a["topic"] if _is_subject(p, a["topic"]) else (db.get_flag(conn, last_key) or "")
         try_key = f"{SOCIAL_TRY_FLAG}{t.key}:{approach}:{subject}"
         prev = db.get_flag(conn, try_key)
-        if prev and not _new_leverage(prev, turn.turn, disp, a["items_used"]):
+        cited = (cited_topics(conn, a["topic_text"]) - {f"{t.key}:{subject}"}) if _is_subject(p, a["topic"]) \
+            else set()
+        if prev and not _new_leverage(prev, turn.turn, disp, a["items_used"], cited):
             raise TalkReject("impossible_action", "no_new_leverage")
         dc = personas.social_dc(p, skill, before) if p else turn.dc_for(a, t)
         check = turn.check(a, skill, dc)
@@ -181,7 +187,9 @@ def resolve(turn, a: Dict, t) -> Dict:
 
     set_disp(delta, social=True)
     if try_key:
-        db.set_flag(conn, try_key, {"turn": turn.turn, "disposition": disp, "items": sorted(a["items_used"])})
+        db.set_flag(conn, try_key, {"turn": turn.turn, "disposition": disp, "items": sorted(a["items_used"]),
+                                    "revealed": sorted(known_now)})
+        db.set_flag(conn, last_key, subject)
     after = rules.disposition_band(disp)
     # cowed: topics read one band above the band *before* the drop (else intimidation could never help)
     topic_band = personas.shift_band(before, 1) if approach == "intimidate" and success and check else after
@@ -220,9 +228,50 @@ def resolve(turn, a: Dict, t) -> Dict:
     return r
 
 
-def _new_leverage(prev: Dict, turn_no: int, disposition: int, items_used) -> bool:
+def _new_leverage(prev: Dict, turn_no: int, disposition: int, items_used, cited=()) -> bool:
+    """A retry is allowed after RETRY_TURNS turns, if the NPC's disposition changed, if `items_used`
+    has an item not used before, or (v0.6.1) if the proposal cites (via `topic_text`, next to the
+    subject `topic`) a topic revealed to the player since the last attempt."""
     return (turn_no - prev.get("turn", 0) >= RETRY_TURNS or disposition != prev.get("disposition")
-            or bool(set(items_used) - set(prev.get("items") or [])))
+            or bool(set(items_used) - set(prev.get("items") or []))
+            or bool(set(cited) - set(prev.get("revealed") or [])))
+
+
+def _is_subject(p, key) -> bool:
+    return bool(key) and bool(p) and (personas.topic(p, key) is not None or key in (p.get("trades") or {}))
+
+
+def _norm(text) -> str:
+    s = " ".join(re.sub(r"[^\w' ]+", " ", str(text or "").lower()).split())
+    for d in DETERMINERS:
+        if s.startswith(d):
+            s = s[len(d):]
+    return s
+
+
+def all_revealed(conn) -> set:
+    """Every topic revealed to the player so far, as "<npc_key>:<topic_key>"."""
+    return {f"{r[0]}:{r[1]}" for r in conn.execute(
+        "SELECT n.key, r.topic_key FROM npc_topics_revealed r JOIN npcs n ON n.id = r.npc_id")}
+
+
+def cited_topics(conn, text) -> set:
+    """Revealed topics (any NPC) that `text` names exactly: the key, the key with spaces, an alias or a
+    label segment (split on "/"), ignoring case, punctuation and a leading determiner."""
+    want = _norm(text)
+    if not want:
+        return set()
+    out = set()
+    for r in conn.execute("SELECT n.key, n.id, r.topic_key FROM npc_topics_revealed r JOIN npcs n ON n.id = r.npc_id"):
+        p = personas.get(conn, r["id"])
+        tp = personas.topic(p, r["topic_key"]) if p else None
+        if not tp:
+            continue
+        names = [r["topic_key"], r["topic_key"].replace("_", " ")] + list(tp.get("aliases") or []) + \
+            [x for x in str(tp.get("label") or "").split("/")]
+        if want in {_norm(x) for x in names if x}:
+            out.add(f"{r['key']}:{r['topic_key']}")
+    return out
 
 
 def _precheck_trade(turn, a, t, p, band) -> None:

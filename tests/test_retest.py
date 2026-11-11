@@ -451,3 +451,45 @@ def test_r3_01_parsed_rejections_still_waste_the_round(demo, text, detail):
     if detail:
         assert r["results"][0]["detail"] == detail
     assert r["wasted_round"] is True and [a["action"] for a in r["npc_actions"]] == ["attack"]
+
+
+def mara_disp(demo):
+    return demo[0].execute("SELECT disposition FROM npcs WHERE key = 'npc_mara'").fetchone()[0]
+
+
+def test_r3_02_paraphrases_do_not_reopen_a_social_try(demo):
+    r, _ = say(demo, "persuade mara about the cellar", 2)
+    assert r["results"][0]["status"] == "resolved"
+    for text in ("persuade mara about the cellar", "convince mara about the cellar door",
+                 "persuade mara about what's down below", "persuade mara about the space beneath the shop",
+                 "plead with mara about it"):
+        r, out = say(demo, text)
+        assert r["results"][0]["detail"] == "no_new_leverage", text
+    p = llm_mod.MockLLM().interpret("persuade mara about what's down below", build_context(*demo))
+    assert p["actions"][0]["topic"] == "the_cellar"  # Mara's demo persona now has that alias
+
+
+def test_r3_02_offered_item_in_text_goes_to_items_used(demo):
+    say(demo, "persuade mara about the cellar", 2)
+    p = llm_mod.MockLLM().interpret("persuade mara about the cellar with the rations", build_context(*demo))
+    a = p["actions"][0]
+    assert (a["topic"], a["topic_text"], a["items_used"]) == ("the_cellar", None, ["item_rations"])
+    r, _ = say(demo, "persuade mara about the cellar with the rations", 2)
+    assert r["results"][0]["status"] == "resolved"
+    r, _ = say(demo, "persuade mara about the cellar with the rations")
+    assert r["results"][0]["detail"] == "no_new_leverage"  # the same item twice is no longer new
+
+
+def test_v061_citing_what_the_guard_told_you_unlocks_a_retry(demo):
+    say(demo, "persuade mara about the cellar", 2)
+    r, _ = say(demo, "persuade mara about the cellar, now that I know about his post")
+    assert r["results"][0]["detail"] == "no_new_leverage"  # not learned yet
+    go(demo, "loc_storeroom")
+    r, _ = say(demo, "ask the guard about his post")
+    assert r["results"][0]["talk"]["requested_topic_status"] == "revealed"
+    go(demo, "loc_town_square")
+    p = llm_mod.MockLLM().interpret("persuade mara about the cellar, now that I know about his post",
+                                    build_context(*demo))
+    assert (p["actions"][0]["topic"], p["actions"][0]["topic_text"]) == ("the_cellar", "his post")
+    r, _ = say(demo, "persuade mara about the cellar, now that I know about his post", 2)
+    assert r["results"][0]["status"] == "resolved"

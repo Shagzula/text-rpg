@@ -49,7 +49,7 @@ knowledge:
     text: "Trade is slow since the merchant shut his cellar. Rope and lamp oil still sell."
   the_cellar:
     label: "the cellar under the storeroom"
-    aliases: [cellar, the cellar door, cellar door]
+    aliases: [cellar, the cellar door, cellar door, down below, what's down below]
     text: "Nobody has been down in the cellar since the merchant left. The door is iron-banded and locked, and it is pitch dark below."
 
 secrets:

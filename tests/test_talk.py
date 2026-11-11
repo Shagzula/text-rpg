@@ -302,11 +302,52 @@ def test_retry_opens_after_ten_turns(g):
     assert run(g, say("persuade", "the_cellar"), rng=Script(2))["results"][0]["status"] == "resolved"
 
 
-def test_free_text_subjects_count_as_topics(g):
+def test_free_text_subjects_fold_into_the_last_subject(g):
+    # v0.6.1 (BUG-R3-02): text that isn't a real topic of this NPC is the same subject as the last try
     run(g, say("deceive", topic_text="being the new kitchen hand"), rng=Script(2))
-    assert run(g, say("deceive", topic_text="Being the  new kitchen hand"))["results"][0]["detail"] == "no_new_leverage"
-    assert run(g, say("deceive", topic_text="a message from the merchant"), rng=Script(2))["results"][0]["status"] \
-        == "resolved"
+    assert run(g, say("deceive", topic_text="a message from the merchant"))["results"][0]["detail"] \
+        == "no_new_leverage"
+    assert run(g, say("deceive", "made_up_key"))["results"][0]["detail"] == "no_new_leverage"
+
+
+def test_paraphrase_after_a_real_topic_is_still_that_topic(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    for text in ("what's down below", "the space under the floor", "THE CELLAR!!"):
+        assert run(g, say("persuade", topic_text=text))["results"][0]["detail"] == "no_new_leverage"
+    assert run(g, say("persuade", "the_storeroom"), rng=Script(2))["results"][0]["status"] == "resolved"
+    # ...and now paraphrases fold into the storeroom, the most recent subject
+    assert run(g, say("persuade", topic_text="that place to the east"))["results"][0]["detail"] == "no_new_leverage"
+
+
+def reveal(g, npc, topic):
+    g["conn"].execute("INSERT INTO npc_topics_revealed (npc_id, topic_key, turn) SELECT id, ?, 0 FROM npcs "
+                      "WHERE key = ?", (topic, npc))
+
+
+def test_citing_a_newly_revealed_topic_is_new_leverage(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    # cited but not revealed yet: no leverage
+    assert run(g, say("persuade", "the_cellar", topic_text="his post"))["results"][0]["detail"] == "no_new_leverage"
+    reveal(g, "npc_dozing_guard", "guard_post")  # learned from another NPC since the last try
+    # revealed, but not referenced in the proposal: still no leverage (option b: it must be cited)
+    assert run(g, say("persuade", "the_cellar"))["results"][0]["detail"] == "no_new_leverage"
+    r = run(g, say("persuade", "the_cellar", topic_text="his post"), rng=Script(2))["results"][0]
+    assert r["status"] == "resolved"
+    # the same citation can't be used twice
+    assert run(g, say("persuade", "the_cellar", topic_text="why he is here"))["results"][0]["detail"] \
+        == "no_new_leverage"
+
+
+def test_citing_a_topic_known_before_the_last_try_is_not_leverage(g):
+    reveal(g, "npc_dozing_guard", "guard_post")
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    assert run(g, say("persuade", "the_cellar", topic_text="your post"))["results"][0]["detail"] == "no_new_leverage"
+
+
+def test_citing_the_subject_itself_is_not_leverage(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    reveal(g, "npc_mara", "the_cellar")
+    assert run(g, say("persuade", "the_cellar", topic_text="the cellar"))["results"][0]["detail"] == "no_new_leverage"
 
 
 def test_persuasion_farming_cannot_reach_allied(g):
