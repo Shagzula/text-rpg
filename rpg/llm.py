@@ -1021,7 +1021,7 @@ def _join(items: List[str]) -> str:
 # Factory (real providers live in rpg/providers.py)
 # ---------------------------------------------------------------------------
 
-PROVIDER_NAMES = ("mock", "openai", "anthropic")
+PROVIDER_NAMES = ("mock", "openai", "anthropic", "grok")
 PROVIDERS = PROVIDER_NAMES  # kept for callers that list the choices
 
 
@@ -1033,12 +1033,13 @@ def get_llm(name: Optional[str] = None, *, dry_run: Optional[bool] = None) -> "L
     if choice == "mock":
         return MockLLM()
     from . import providers
-    cls = providers.OpenAIClient if choice == "openai" else providers.AnthropicClient
+    cls = {"openai": providers.OpenAIClient, "anthropic": providers.AnthropicClient,
+           "grok": providers.GrokClient}[choice]
     return cls(dry_run=dry_run)
 
 
-def __getattr__(name):  # llm.OpenAIClient / llm.AnthropicClient / llm.LLMError, without an import cycle
-    if name in ("OpenAIClient", "AnthropicClient", "LLMError"):
+def __getattr__(name):  # llm.OpenAIClient / llm.AnthropicClient / llm.GrokClient / llm.LLMError
+    if name in ("OpenAIClient", "AnthropicClient", "GrokClient", "LLMError"):
         from . import providers
         return getattr(providers, name)
     raise AttributeError(name)

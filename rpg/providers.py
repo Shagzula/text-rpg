@@ -125,9 +125,11 @@ class _Provider:
             if status is not None:
                 if 200 <= status < 300:
                     try:
-                        return json.loads(raw.decode("utf-8"))
+                        parsed = json.loads(raw.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         raise LLMError(f"{self.name} {role}: response body was not JSON") from None
+                    self._log_usage(role, parsed)
+                    return parsed
                 last = f"HTTP {status}: {self.redact(raw[:300].decode('utf-8', 'replace'))}"
                 if status not in RETRY_STATUSES:
                     raise LLMError(f"{self.name} {role} failed: {last}")
@@ -142,6 +144,28 @@ class _Provider:
             log.debug("%s %s: %s; retry %d in %.1fs", self.name, role, last, attempt + 1, delay)
             self._sleep(delay)
         raise LLMError(f"{self.name} {role} failed after {MAX_RETRIES + 1} attempts: {last}")
+
+    def _log_usage(self, role: str, resp: Dict) -> None:
+        """Record token/cache usage from a provider response on the existing llm logger."""
+        usage = resp.get("usage") or {}
+        details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        cached = details.get("cached_tokens")
+        if cached is None:
+            cached = usage.get("cache_read_input_tokens")
+        written = details.get("cache_write_tokens")
+        if written is None:
+            written = usage.get("cache_creation_input_tokens")
+        info = {
+            "input_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
+            "output_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
+            "cached_tokens": cached,
+            "cache_write_tokens": written,
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        }
+        self.last_usage = info
+        log.info("%s %s usage input=%s output=%s cached_tokens=%s cache_write=%s cache_read_input_tokens=%s",
+                 self.name, role, info["input_tokens"], info["output_tokens"],
+                 info["cached_tokens"], info["cache_write_tokens"], info["cache_read_input_tokens"])
 
     # -- LLMClient ---------------------------------------------------------------------
     def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None):
@@ -204,7 +228,12 @@ class OpenAIClient(_Provider):
             "model": self.models[role], "instructions": system,
             "input": [{"role": r, "content": t} for r, t in turns],
             "max_output_tokens": MAX_TOKENS[role], "store": False,
+            "prompt_cache_key": f"rpg-{role}",
         }
+        # GPT-6 Responses API: prompt_cache_retention is deprecated; ttl is the supported control.
+        # 12h suits the static system prefix (incl. Context field notes) reused across turns.
+        if getattr(self, "use_prompt_cache_options", True):
+            body["prompt_cache_options"] = {"ttl": "12h"}
         effort = os.environ.get("RPG_OPENAI_REASONING_EFFORT")
         if effort:
             body["reasoning"] = {"effort": effort}
@@ -225,10 +254,10 @@ class OpenAIClient(_Provider):
         if not parts and isinstance(resp.get("output_text"), str):
             parts = [resp["output_text"]]
         if not parts:
-            raise LLMError(f"openai {role}: no text in the response"
+            raise LLMError(f"{self.name} {role}: no text in the response"
                            + (" (the model refused)" if refusal else f" (status {resp.get('status')!r})"))
         if resp.get("status") == "incomplete":
-            log.debug("openai %s: incomplete response (%s)", role, resp.get("incomplete_details"))
+            log.debug("%s %s: incomplete response (%s)", self.name, role, resp.get("incomplete_details"))
         return "".join(parts)
 
 
@@ -267,3 +296,18 @@ class AnthropicClient(_Provider):
         if resp.get("stop_reason") == "max_tokens":
             log.debug("anthropic %s: hit max_tokens", role)
         return text
+
+
+class GrokClient(OpenAIClient):
+    """xAI Responses API (docs.x.ai): POST {base}/responses, same shape as OpenAI, including
+    text.format json_schema (strict), store, and prompt_cache_key. Default model grok-4.7
+    was listed on docs.x.ai this run. prompt_cache_options is omitted (not documented for xAI)."""
+    name, env_key = "grok", "XAI_API_KEY"
+    default_models = {"interpret": "grok-4.7", "voice": "grok-4.7", "narrate": "grok-4.7"}
+    use_prompt_cache_options = False
+    default_base_url = "https://api.x.ai/v1"
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        base = (os.environ.get("RPG_GROK_BASE_URL") or self.default_base_url).rstrip("/")
+        self.url = base + "/responses"

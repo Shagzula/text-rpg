@@ -326,7 +326,7 @@ def main(argv=None) -> int:
     ap.add_argument("--new", action="store_true", help="start a new game (replaces the working save)")
     ap.add_argument("--load", metavar="NAME", help="load a save slot at start")
     ap.add_argument("--seed", type=int, help="seed the dice for a deterministic run")
-    ap.add_argument("--llm", help="provider: mock (default), openai, anthropic; or set $RPG_LLM")
+    ap.add_argument("--llm", help="provider: mock (default), openai, anthropic, grok; or set $RPG_LLM")
     ap.add_argument("--dry-run", action="store_true", default=None,
                     help="print each provider request (key redacted) to stderr instead of sending it; "
                          "the mock answers. Same as RPG_LLM_DRY_RUN=1")

@@ -372,3 +372,87 @@ def test_a_full_cli_turn_through_a_faked_provider(monkeypatch, tmp_path, name):
     assert "You look around. Quiet.\n\nWhat do you do?" in out
     assert [json.loads(json.dumps(x["body"])).get("model") for x in http.calls] == \
         [c.models["narrate"], c.models["interpret"], c.models["narrate"]]
+
+
+# --- prompt cache (lean dry-run) ------------------------------------------------
+
+def test_prompt_cache_prefix_is_stable_and_params_are_set(world):
+    """Static system bytes (incl. Context field notes) are identical across turns; cache params present."""
+    ctx1 = build_context(*world)
+    ctx2 = dict(ctx1)
+    oa, an = providers.OpenAIClient(dry_run=True, out=lambda s: None), providers.AnthropicClient(dry_run=True, out=lambda s: None)
+    from collections import defaultdict
+    prefixes = defaultdict(list)  # (provider, role) -> [system bytes]
+    for player_text in ("look around", "wait a moment"):
+        for role, msgs in (("interpret", prompts.interpret_messages(ctx1 if player_text.startswith("look") else ctx2, player_text)),
+                           ("narrate", prompts.narrate_messages({"turn": 1, "results": [], "opening": False}, ctx1, player_text)),
+                           ("voice", prompts.voice_messages({"key": "npc_x", "name": "X", "voice": {"style": "s", "sample_phrases": []},
+                                                             "traits": [], "goals": []},
+                                                            {"player_text": player_text, "talk": {}, "recent_dialogue": []}))):
+            schema = None
+            if role == "interpret":
+                from rpg.proposal_schema import SCHEMA_NAME, proposal_schema
+                schema = (SCHEMA_NAME, proposal_schema())
+            for client, key in ((oa, "openai"), (an, "anthropic")):
+                body = client.build(role, msgs[0], [("user", msgs[1])], schema=schema)
+                if key == "openai":
+                    prefixes[(key, role)].append(body["instructions"].encode("utf-8"))
+                    assert body["prompt_cache_key"] == f"rpg-{role}"
+                    assert body["prompt_cache_options"] == {"ttl": "12h"}
+                    assert "## Context field notes" in body["instructions"]
+                else:
+                    sys0 = body["system"][0]
+                    prefixes[(key, role)].append(sys0["text"].encode("utf-8"))
+                    assert sys0["cache_control"] == {"type": "ephemeral"}
+                    assert "## Context field notes" in sys0["text"]
+                    assert len(body["system"]) == 1
+    for (key, role), blobs in prefixes.items():
+        assert len(set(blobs)) == 1, f"{key} {role} system prefix changed across turns"
+
+
+def test_usage_log_reads_cached_token_fields(monkeypatch, world, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="rpg.llm")
+    usage = {"input_tokens": 1200, "output_tokens": 80,
+             "input_tokens_details": {"cached_tokens": 900, "cache_write_tokens": 0},
+             "cache_read_input_tokens": 900}
+    c, http, _, _ = make(monkeypatch, "openai", (200, {**oa_text(json.dumps(GOOD)), "usage": usage}))
+    c.interpret("look around", build_context(*world))
+    assert c.last_usage["cached_tokens"] == 900
+    assert c.last_usage["cache_read_input_tokens"] == 900
+    assert "cached_tokens=900" in caplog.text
+
+
+# --- Grok / xAI -----------------------------------------------------------------
+
+def test_grok_reuses_responses_api_with_xai_url_and_key(monkeypatch, world):
+    monkeypatch.setenv("XAI_API_KEY", KEY)
+    monkeypatch.delenv("RPG_GROK_BASE_URL", raising=False)
+    http = FakeHTTP((200, oa_text(json.dumps(GOOD))))
+    c = providers.GrokClient(transport=http, sleep=lambda s: None, out=lambda s: None, rng=random.Random(0))
+    assert c.interpret("look around", build_context(*world)) == GOOD
+    call = http.calls[0]
+    assert call["url"] == "https://api.x.ai/v1/responses"
+    assert call["headers"]["Authorization"] == f"Bearer {KEY}"
+    b = call["body"]
+    assert b["model"] == "grok-4.7" and b["store"] is False
+    assert b["prompt_cache_key"] == "rpg-interpret"
+    assert "prompt_cache_options" not in b  # not documented for xAI
+    assert b["text"]["format"]["type"] == "json_schema" and b["text"]["format"]["strict"] is True
+
+
+def test_grok_base_url_and_model_overrides(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", KEY)
+    monkeypatch.setenv("RPG_GROK_BASE_URL", "https://example.test/v1/")
+    monkeypatch.setenv("RPG_GROK_MODEL", "grok-custom")
+    monkeypatch.setenv("RPG_GROK_MODEL_NARRATE", "grok-narrate")
+    c = providers.GrokClient(dry_run=True, out=lambda s: None)
+    assert c.url == "https://example.test/v1/responses"
+    assert c.models == {"interpret": "grok-custom", "voice": "grok-custom", "narrate": "grok-narrate"}
+
+
+def test_get_llm_grok_and_dry_run(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", KEY)
+    monkeypatch.setenv("RPG_LLM", "grok")
+    c = llm.get_llm(dry_run=True)
+    assert isinstance(c, providers.GrokClient) and c.dry_run is True
