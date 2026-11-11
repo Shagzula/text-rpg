@@ -270,6 +270,24 @@ def test_daze_narration(tmp_path):
         {**base, "dazed": "negated", "negated_by": {"key": "item_leather_cap", "name": "Leather Cap"}})
 
 
+def test_daze_refresh_on_the_expiry_turn_persists_and_is_not_narrated_as_faded(w):
+    """BUG-R5-02: a second overwhelming hit on the expire turn used to apply and then tick away."""
+    from rpg import llm
+    hostile(w)
+    run(w, act("wait"), rng=Script(20, 1))  # first overwhelming daze
+    assert conds(w) == ["dazed"]
+    r = run(w, act("wait"), rng=Script(20, 1))  # expiry turn, another overwhelming hit
+    assert r["npc_actions"][0].get("dazed") == "applied"
+    assert not any(e.get("name") == "dazed" for e in r["expired"])
+    assert conds(w) == ["dazed"]
+    text = llm.MockLLM().narrate(r, {})
+    assert "you're dazed" in text and "fades" not in text
+    # The refreshed 1-round daze covers the next player action, then expires.
+    r = run(w, act("wait"), rng=Script(5))
+    assert {"type": "condition_expired", "target": "self", "name": "dazed"} in r["expired"]
+    assert conds(w) == []
+
+
 # --- v0.7.1: structured fields with engine defaults as the fallback --------------------------------
 
 def add_variant(w, base, new_id, name, **stats):

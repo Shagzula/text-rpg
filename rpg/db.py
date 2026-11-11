@@ -184,19 +184,26 @@ def _stronger(a, b):
 
 def add_condition(conn, character_id: int, cond: Condition) -> int:
     """Add a condition. Re-applying one the character already has (same name) does not
-    stack (BUG-07): the existing row is kept and refreshed -- stronger effect per key,
-    higher severity, lasting if either is, the longer duration (NULL = indefinite)."""
+    stack (BUG-07): the existing row is refreshed -- stronger effect per key,
+    higher severity, lasting if either is, the longer duration (NULL = indefinite).
+
+    The row id is bumped to MAX(id)+1 so a refresh applied in the NPC phase (after
+    player_condition_mark was taken) skips this turn's tick. Otherwise a 1-round
+    daze re-applied on its expiry turn would be decremented and deleted immediately
+    (BUG-R5-02).
+    """
     old = conn.execute("SELECT * FROM character_conditions WHERE character_id = ? AND name = ? ORDER BY id LIMIT 1",
                        (character_id, cond.name)).fetchone()
     if old is not None:
         sev = max(int(old["severity"] or 0), int(cond.severity or 0))
         dur = None if old["duration_turns"] is None or cond.duration_turns is None \
             else max(old["duration_turns"], cond.duration_turns)
-        conn.execute("UPDATE character_conditions SET effect = ?, severity = ?, lasting = ?, duration_turns = ?, "
-                     "description = COALESCE(?, description) WHERE id = ?",
-                     (json.dumps(_stronger(json.loads(old["effect"] or "{}"), cond.effect)), sev,
+        new_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM character_conditions").fetchone()[0] + 1
+        conn.execute("UPDATE character_conditions SET id = ?, effect = ?, severity = ?, lasting = ?, "
+                     "duration_turns = ?, description = COALESCE(?, description) WHERE id = ?",
+                     (new_id, json.dumps(_stronger(json.loads(old["effect"] or "{}"), cond.effect)), sev,
                       int(bool(old["lasting"]) or cond.lasting), dur, cond.description, old["id"]))
-        return old["id"]
+        return new_id
     cur = conn.execute(
         """INSERT INTO character_conditions
            (character_id, name, description, severity, effect, lasting, duration_turns, source)
