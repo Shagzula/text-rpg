@@ -41,8 +41,22 @@ def test_yaml_fields_driving_v07():
     assert YAML["item_signal_whistle"]["stats"]["subcategory"] == "signal"
     assert (YAML["item_work_gloves"]["slot"], YAML["item_leather_cap"]["slot"], YAML["item_travel_boots"]["slot"]) \
         == ("hands", "head", "feet")
-    for k in ("item_rope", "item_signal_whistle", "item_work_gloves", "item_leather_cap"):
-        assert "not yet modelled" in YAML[k]["stats"]["use_note"]  # descriptive only: engine defaults apply
+    # Story Designer v0.8 YAML: structured fields equal to the engine defaults (the YAML is the source of truth)
+    for k in ("item_leather_cap", "item_work_gloves"):
+        assert YAML[k]["stats"]["perk"] == effects.EQUIP_PERKS[k]
+    rope = YAML["item_rope"]["stats"]
+    assert {k: rope[k] for k in ("enables", "skill_bonus")} == inv.SUBCATEGORY_DEFAULTS["climbing"]
+    assert "perk" not in YAML["item_travel_boots"]["stats"]
+
+
+def test_template_perk_overrides_the_engine_default(w):
+    conn = w["conn"]
+    custom = dict(YAML["item_leather_cap"], id="item_iron_cap", name="Iron Cap",
+                  stats={**YAML["item_leather_cap"]["stats"], "perk": {"negate_conditions": ["injured_str"]}})
+    db.add_item_template(conn, custom)
+    give(w, "item_iron_cap", equip=True)
+    assert "id" in daze(w)  # the iron cap's own perk doesn't cover dazes
+    assert "negated_by" in effects.add_player_condition(conn, w["cid"], rules.Condition(name="injured_str"))
 
 
 # --- rope -----------------------------------------------------------------------------------------

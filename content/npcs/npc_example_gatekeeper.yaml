@@ -1,4 +1,4 @@
-# NPC persona template (AGREED, contracts.md v0.6 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
+# NPC persona template (AGREED, contracts.md v0.7 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
 # Schema: content/npc_persona_schema.md. The engine loads this file. Only PUBLIC parts reach the voice prompt
 # (name, voice, traits, goals), plus the topic texts the engine allows on a given turn.
 # `secrets` and `insight_tell` are never sent to the voice prompt or the narrator, except as engine-approved text.
@@ -29,6 +29,12 @@ combat:                      # optional; read once at seed into npcs columns (de
   attack_bonus: 3
   damage: "1d6"
   save_bonus: 1
+
+gifts:                       # optional, engine-only: item template key -> disposition gain (1..50). No friendly cap:
+                             # gifts (and story events) are the only ways to allied. Defaults: an unlisted item worth
+                             # 50+ coins gives +10; each template works once per NPC; items he trades away are refused.
+  item_bracing_tonic: 20     # a long night shift: he'd treasure something to keep him going
+  item_light_source: 10      # a torch for the dark end of the gate (worth < 50, so only valued because listed)
 
 social:                      # NPC social DC = base + per-skill modifier
   base_dc: 12

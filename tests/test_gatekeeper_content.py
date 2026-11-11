@@ -84,3 +84,11 @@ def test_gatekeeper_topic_alias(gk):
     p, r = say(gk, "ask the gatekeeper about closing time")
     assert p["actions"][0]["topic"] == "gate_rules"
     assert r["results"][0]["talk"]["requested_topic_status"] == "revealed"
+
+
+def test_gatekeeper_values_listed_gifts(gk):
+    conn, cid = gk
+    db.add_item(conn, "item_light_source", character_id=cid, key="item_spare_torch")
+    _, r = say(gk, "give the spare torch to the gatekeeper")
+    assert r["results"][0]["talk"]["gift"]["status"] == "accepted"
+    assert conn.execute("SELECT disposition FROM npcs WHERE key = 'npc_example_gatekeeper'").fetchone()[0] == 5
