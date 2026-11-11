@@ -1,4 +1,4 @@
-# JSON contracts (v0.10.3)
+# JSON contracts (v0.11)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -80,6 +80,12 @@ Principles
   (`state_changes`, flags, `npc_actions`, targets, `intent_summary`, conditions, `pending_clarify`,
   persona_view, and anything else) goes through it, so a real key or display name of an NPC unseen
   at that moment cannot reach the model. The player's own typed text (`player_text`) is not rewritten.
+  v0.11 BUG-R8-02: name masking matches a full display name or alias as a whole word/phrase, not
+  ordinary English that happens to equal an unseen NPC's name. Multi-word names and aliases are
+  matched case-insensitively as a whole phrase. A single capitalized proper name that is also a
+  common word (Will, Hope, Stone) is matched case-sensitively, so "will you help" is left alone.
+  Key slugs (`NPC_DOZING_GUARD`) are matched case-insensitively with `[A-Za-z0-9_]` boundaries.
+  A single-word key slug is not also used as a name replacement (that would over-mask "will").
   v0.9: mock (and narrator) wording does not put an article before a proper-name NPC (a single
   capitalized word such as Mara: "Mara comes after you", not "the Mara"). Multi-word or lowercase
   names take "the" (the Dozing Guard, the unseen figure). A name that already starts with a/an/the
@@ -572,6 +578,27 @@ when `topic` is null). `validate_proposal()` keeps them; non-talk actions never 
   "items": [{key, name, accepted, reason?}]}`; `trade` is null and `requested_topic_status` is `none`. A gift
   is a resolved action (time passes). `gifts` is engine-only (never in context or the voice prompt). Demo
   personas: Mara values the crowbar (+20), the guard values rations (+15).
+- v0.11 **DECIDED** **parley** (Lead): talking to, gifting, or trading a **hostile** NPC mid-combat
+  (`effects.hostiles_here` and the target is hostile) is one contested social check, not ordinary
+  talk/gift/trade. The player rolls the approach skill (default `persuasion`) against the existing
+  persona `social_dc` (base + skill + band; hostile +5, so a typical DC is 17). A gift on the persona
+  `gifts` list, or worth >= 50 coins (`GIFT_VALUE_THRESHOLD`), is leverage and grants advantage
+  (2d20 keep higher; the RNG state stays in the DB). On **success**: combat ends (the NPC is no
+  longer hostile, so the NPC phase will not attack), disposition is set to `WARY_DISPOSITION` = -20
+  (unfriendly band; narrator-facing `parley.stance` is `"wary"`; never friendly), and a leveraging
+  gift is consumed (`item_removed`). On **failure**: it is a resolved failure (time passes, the foe
+  acts normally); the gift is **not** consumed; `wasted_round` is not set (that flag is for
+  rejections). The 5e no-retry rule applies to repeated parley against the same NPC in the same
+  fight (`parley_try:<npc>`): a retry is `impossible_action` / `no_new_leverage` unless there is new
+  leverage (a gift not already offered on the failed try; the same unconsumed gift is not new). In
+  combat that rejection is a wasted round (hostiles still act). Trade mid-combat vs a hostile is
+  also a parley; the trade is not executed (`talk.trade` is null). Otherwise disposition **never
+  rises** during combat: ordinary talk/gift/trade gains on anyone present are blocked while a
+  hostile is in the fight (`set_disp` zeros positive deltas; a non-parley gift can still be
+  consumed but will not raise disposition). Auto-success does not fire on a typical hostile parley
+  (DC 17 > `AUTO_SUCCESS_MAX_DC` 15). The result includes a `parley` block for the narrator:
+  `{success, degree, skill, advantage, gift, stance}` (`gift` is `{key, name, template}` or null;
+  `stance` is `"wary"` on success, else null). Works in the dark (the usual `for_llm` masking).
 - `insight` success -> `insight_read` = the persona's `insight_tell` (narrator only; the voice step never
   sees it).
 
@@ -640,10 +667,10 @@ falls back to indirect speech).
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
 
-## (e) LLM layer (v0.10)
+## (e) LLM layer (v0.11)
 `LLMClient` (rpg/llm.py): `interpret(player_text, context, reprompt=None) -> proposal dict (or
 raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_topics, payload, context) ->
-{"lines": [...]}` (or its JSON text). Providers: `RPG_LLM` / `--llm` = `mock` | `openai` | `anthropic`.
+{"lines": [...]}` (or its JSON text). Providers: `RPG_LLM` / `--llm` = `mock` | `grok` | `openai` | `anthropic`. Unset `RPG_LLM` is `mock`. Live play is documented as `grok`.
 v0.10: `interpret()` raises `InputTooLong` if `player_text` is longer than 300 characters (every
 caller, not only the CLI). The CLI catches it and prints the same too-long message; no turn is spent.
 
@@ -675,16 +702,26 @@ caller, not only the CLI). The CLI catches it and prints the same too-long messa
 - **Re-prompt:** a non-JSON or invalid proposal -> the engine's `invalid_proposal.reprompt`; the client
   resends with the bad output as an assistant turn and the reprompt as a user turn. Second failure -> no turn.
 - **OpenAI:** `POST https://api.openai.com/v1/responses`, `Authorization: Bearer $OPENAI_API_KEY`;
-  body `{model, instructions, input: [{role, content}], max_output_tokens, store: false, text.format?:
-  {type: json_schema, name, schema, strict: true}}`. Text = the `output_text` parts of `message` items;
-  a `refusal` part or no text -> `LLMError`.
+  body `{model, instructions, input: [{role, content}], max_output_tokens, store: false,
+  prompt_cache_key: "rpg-<role>", prompt_cache_options: {ttl: "12h"}, text.format?:
+  {type: json_schema, name, schema, strict: true}}`. The static `instructions` prefix (including
+  Context field notes) is byte-stable across turns. `prompt_cache_retention` is deprecated and is
+  not sent. Text = the `output_text` parts of `message` items; a `refusal` part or no text -> `LLMError`.
+  Usage `input_tokens_details.cached_tokens` is logged.
 - **Anthropic:** `POST https://api.anthropic.com/v1/messages`, `x-api-key`, `anthropic-version:
   2026-10-21`; body `{model, max_tokens, system: [{type: text, text, cache_control: ephemeral}], messages,
-  output_config?: {format?: {type: json_schema, schema}, effort?}}`. Text = the `text` blocks; none ->
-  `LLMError` (with `stop_reason`).
+  output_config?: {format?: {type: json_schema, schema}, effort?}}`. One cache breakpoint on the full
+  static system block (including Context field notes). Text = the `text` blocks; none ->
+  `LLMError` (with `stop_reason`). Usage `cache_read_input_tokens` / `cache_creation_input_tokens` is logged.
+- **Grok (xAI):** same Responses shape as OpenAI, reused by `GrokClient`. `POST {RPG_GROK_BASE_URL}/responses`
+  (default base `https://api.x.ai/v1`), `Authorization: Bearer $XAI_API_KEY`. docs.x.ai (2026-11-10)
+  supports `/v1/responses` with `text.format` `json_schema` (`strict: true`), and accepts `store` and
+  `prompt_cache_key`. `prompt_cache_options` is omitted (not documented for xAI). Default model
+  `grok-4.7` for every role (listed in official examples on that date); override with `RPG_GROK_MODEL`
+  / `RPG_GROK_MODEL_<ROLE>`.
 - **Models:** per role (`interpret`, `narrate`, `voice`): `RPG_<P>_MODEL_<ROLE>` > `RPG_<P>_MODEL` >
-  `RPG_LLM_MODEL` > default (OpenAI `gpt-6-luna` / `gpt-6.1-sol` for narrate; Anthropic `claude-haiku-5-5`
-  / `claude-sonnet-5-5` for narrate).
+  `RPG_LLM_MODEL` > default (Grok `grok-4.7`; OpenAI `gpt-6-luna` / `gpt-6.1-sol` for narrate;
+  Anthropic `claude-haiku-5-5` / `claude-sonnet-5-5` for narrate).
 - **Keys:** environment only; missing -> `LLMConfigError` naming the variable (except in dry-run). Keys are
   never logged, printed or included in errors (`redact`); `repr(client)` shows models only.
 - **HTTP:** stdlib `urllib`; 60 s timeout; retry 408/409/429/500/502/503/504/529 and network errors up to 3
@@ -692,6 +729,31 @@ caller, not only the CLI). The CLI catches it and prints the same too-long messa
   `LLMError` at once. The CLI shows interpreter errors without spending a turn.
 - **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
   (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.11
+1. BUG-R8-02: `unseen.for_llm` no longer rewrites ordinary words that equal an unseen NPC's
+   display name (`will you help`, Hope, Stone). Masking is whole-phrase for multi-word names
+   (case-insensitive), case-sensitive for a single capitalized proper name, and case-insensitive
+   for key slugs with identifier boundaries.
+2. **Parley** (Lead): talk/gift/trade vs a hostile mid-combat is one contested social check
+   (default persuasion vs persona `social_dc`). Valued gift or item worth >= 50 coins: advantage.
+   Success ends combat, sets disposition to -20 (`wary`, unfriendly, never friendly), and consumes
+   a leveraging gift. Failure is a resolved failure (foe acts; gift kept). No retry in the same
+   fight without new leverage. Disposition does not otherwise rise during combat. Result field
+   `parley: {success, degree, skill, advantage, gift, stance}`.
+3. Prompt caching: OpenAI sends `prompt_cache_key` (`rpg-<role>`) and `prompt_cache_options.ttl`
+   `12h` on a byte-stable `instructions` prefix. Anthropic keeps a single `cache_control: ephemeral`
+   on the static system (including Context field notes). Both log cache usage fields. Cost figures
+   in the README are a brief estimate from the providers' pricing pages on 2026-11-10; Grok rates
+   were not verified this run.
+4. **Grok (xAI)** provider: `RPG_LLM=grok`, key `XAI_API_KEY`, base `RPG_GROK_BASE_URL`
+   (default `https://api.x.ai/v1`), Responses API with strict `json_schema`. Default model
+   `grok-4.7`. Unset `RPG_LLM` remains `mock`.
+5. Story Designer prompt asks (content files were not edited): the interpreter and narrator
+   should treat mid-combat talk/gift/trade with a hostile as a parley; the narrator should use
+   the `parley` block (success, degree, gift used, stance `wary`) and must not narrate a friendly
+   outcome; failed or rejected retries should not be written as a completed deal; dark parley
+   still uses unseen-figure wording only.
 
 ## Changes in v0.10.3
 1. BUG-R8-01: one masking step (`unseen.for_llm`) sits at the interpret / narrate / voice payload

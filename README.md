@@ -17,13 +17,46 @@ SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `d
 - `rpg/data/npcs/` - demo personas (Mara, the dozing guard)
 - `rpg/context.py` - `build_context(conn, character_id)`: the prompt context block; narration log
 - `rpg/llm.py` - `LLMClient` protocol, `MockLLM`, narration post-processing, provider factory (`RPG_LLM`)
-- `rpg/providers.py` - `OpenAIClient` / `AnthropicClient` (urllib, retries, redaction, dry-run)
+- `rpg/providers.py` - `OpenAIClient` / `AnthropicClient` / `GrokClient` (urllib, retries, redaction, dry-run)
 - `rpg/prompts.py` - loads the three prompts from `content/` and fills their context sections
 - `rpg/proposal_schema.py` - JSON Schema for the action proposal (`docs/action_proposal.schema.json`)
 - `rpg/unseen.py` - masks NPCs you can't see in the dark (sound + opaque ref)
 - `rpg/world.py` - built-in demo slice
 - `rpg/cli.py` / `rpg/__main__.py` - terminal turn loop (`python3 -m rpg`)
 - `tests/` - pytest suite
+
+## Play with Grok
+
+Live play uses xAI's Grok. Mock stays the default when `RPG_LLM` is unset, so tests and offline
+play still work without a key.
+
+On your own machine:
+
+1. Clone this repository and `cd` into the `code/` directory.
+2. Use Python 3.10 or later (`python3 --version`). The game itself is stdlib-only; a venv is optional
+   unless you want to run tests (`python3 -m venv .venv && .venv/bin/pip install pytest`).
+3. Export your key (you set the value; it is never stored, logged, or printed):
+   `export XAI_API_KEY=...`
+4. Optionally pick a model with `RPG_GROK_MODEL`, or a per-role override such as
+   `RPG_GROK_MODEL_NARRATE`. When unset, every role defaults to `grok-4.7` (listed on
+   [docs.x.ai](https://docs.x.ai/docs/api-reference) as of 2026-11-10).
+5. Start a game:
+
+```bash
+cd /path/to/rpg-project/code
+export RPG_LLM=grok
+export XAI_API_KEY=...          # set this yourself
+python3 -m rpg --new
+```
+
+Dry run (no network, no key needed) prints the exact request to stderr and plays with the mock:
+
+```bash
+python3 -m rpg --new --llm grok --dry-run 2> requests.log
+# or: RPG_LLM=grok RPG_LLM_DRY_RUN=1 python3 -m rpg --new
+```
+
+`RPG_GROK_BASE_URL` defaults to `https://api.x.ai/v1` (the client POSTs `/responses` on that base).
 
 ## Play (mock mode, no API key needed)
 ```bash
@@ -71,7 +104,13 @@ signal whistle is heard next door and throws a hostile off its next swing (once 
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
-12 HP, +3, 1d6) is a real fight for the 10-HP premade (defense 12). Rest heals half your missing HP, or
+12 HP, +3, 1d6) is a real fight for the 10-HP premade (defense 12). Talking to, gifting, or trading a
+hostile mid-combat is a **parley** (contracts v0.11): one contested social check (default persuasion vs
+the persona social DC; a valued gift or an item worth 50+ coins gives advantage). Success ends the fight
+and leaves them wary (disposition -20, unfriendly, never friendly); a leveraging gift is consumed only
+on success. Failure costs the round (the foe acts) and the gift stays. You can't retry the same foe in
+the same fight without new leverage (a different gift counts). Other talk/gift/trade disposition gains
+are blocked while a hostile is in the fight. Rest heals half your missing HP, or
 to full if you carry rations (one is eaten); it's blocked while a hostile NPC is here or in a room next
 door. Flee and a hostile follows you once into the next room, then stays there (even in the dark).
 
@@ -95,10 +134,11 @@ straight to that choice.
 | var | meaning |
 |---|---|
 | `RPG_DB_PATH` | working save file (overridden by `--db`) |
-| `RPG_LLM` | `mock` (default), `openai`, `anthropic` (overridden by `--llm`) |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | read from the environment only, never stored, logged or printed. Missing -> a clear error at start (unless dry-run). |
-| `RPG_OPENAI_MODEL` / `RPG_ANTHROPIC_MODEL` | model for every role of that provider |
-| `RPG_OPENAI_MODEL_INTERPRET` / `_NARRATE` / `_VOICE` (same for `RPG_ANTHROPIC_…`) | model for one role (wins over the above) |
+| `RPG_LLM` | `mock` (default), `grok`, `openai`, `anthropic` (overridden by `--llm`). Live play: `grok`. |
+| `XAI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | read from the environment only, never stored, logged or printed. Missing -> a clear error at start (unless dry-run). |
+| `RPG_GROK_MODEL` / `RPG_OPENAI_MODEL` / `RPG_ANTHROPIC_MODEL` | model for every role of that provider |
+| `RPG_GROK_MODEL_INTERPRET` / `_NARRATE` / `_VOICE` (same for `RPG_OPENAI_…` and `RPG_ANTHROPIC_…`) | model for one role (wins over the above) |
+| `RPG_GROK_BASE_URL` | xAI API base (default `https://api.x.ai/v1`) |
 | `RPG_LLM_MODEL` | older fallback: one model for every role of whichever provider |
 | `RPG_LLM_DRY_RUN=1` | same as `--dry-run` |
 | `RPG_OPENAI_REASONING_EFFORT` | optional `reasoning.effort` for OpenAI (not sent by default) |
@@ -106,23 +146,31 @@ straight to that choice.
 | `RPG_SETTING_SUMMARY` / `RPG_TONE_NOTES` | fill `{setting_summary}` / `{tone_notes}` (placeholder defaults until the setting is chosen) |
 
 ## Real LLM providers (M2)
+Grok is the documented live-play provider (see **Play with Grok**). OpenAI and Anthropic remain available.
 ```bash
-export OPENAI_API_KEY=...            # or ANTHROPIC_API_KEY=...
-python3 -m rpg --new --llm openai    # or --llm anthropic, or RPG_LLM=openai
-python3 -m rpg --new --llm anthropic --dry-run 2> requests.log   # no network, no key needed
+export XAI_API_KEY=...               # or OPENAI_API_KEY / ANTHROPIC_API_KEY
+python3 -m rpg --new --llm grok      # or RPG_LLM=grok; also --llm openai / anthropic
+python3 -m rpg --new --llm grok --dry-run 2> requests.log   # no network, no key needed
 ```
+- **Grok (xAI)**: reuses the OpenAI client against `RPG_GROK_BASE_URL` (default `https://api.x.ai/v1`),
+  `POST /responses`, `Authorization: Bearer $XAI_API_KEY`. Official docs (docs.x.ai, 2026-11-10) support
+  the Responses API with `text.format: json_schema` (`strict: true`) for interpreter and voice, plus
+  `store` and `prompt_cache_key`. `prompt_cache_options` is not sent (not documented for xAI).
 - **OpenAI**: `POST /v1/responses`, structured outputs (`text.format: json_schema, strict: true`) for the
-  interpreter and NPC voice, plain text for narration; `store: false`. **Anthropic**: `POST /v1/messages`,
+  interpreter and NPC voice, plain text for narration; `store: false`; `prompt_cache_key` per role and
+  `prompt_cache_options.ttl: 12h` so the static system prefix can be reused (`prompt_cache_retention` is
+  deprecated). **Anthropic**: `POST /v1/messages`,
   `anthropic-version: 2026-10-21`, JSON outputs (`output_config.format: json_schema`) for interpreter and
-  voice; the system prompt is marked `cache_control: ephemeral` (prompt caching). No temperature is sent
+  voice; the system prompt (including Context field notes) is marked `cache_control: ephemeral` (one
+  cache breakpoint). No temperature is sent
   (that API version removed it; current OpenAI reasoning models ignore or reject it).
-- **Default models** (checked against the providers' model pages on 2026-11-10; override with the env vars):
+- **Default models** (checked against the providers' docs on 2026-11-10; override with the env vars):
 
-  | role | OpenAI | Anthropic |
-  |---|---|---|
-  | interpret (fast, structured) | `gpt-6-luna` | `claude-haiku-5-5` |
-  | voice_npc (fast, structured) | `gpt-6-luna` | `claude-haiku-5-5` |
-  | narrate (prose quality) | `gpt-6.1-sol` | `claude-sonnet-5-5` |
+  | role | Grok | OpenAI | Anthropic |
+  |---|---|---|---|
+  | interpret (fast, structured) | `grok-4.7` | `gpt-6-luna` | `claude-haiku-5-5` |
+  | voice_npc (fast, structured) | `grok-4.7` | `gpt-6-luna` | `claude-haiku-5-5` |
+  | narrate (prose quality) | `grok-4.7` | `gpt-6.1-sol` | `claude-sonnet-5-5` |
 - **Prompts** come from `content/interpreter_prompt.md`, `narrator_prompt.md`, `npc_voice_prompt.md`. The
   part after `---` is the system prompt; its context section (with the `{placeholders}`) is filled from
   `build_context()` / the engine result and sent as the user message, the rest is sent unchanged as the
@@ -136,12 +184,14 @@ python3 -m rpg --new --llm anthropic --dry-run 2> requests.log   # no network, n
 - **Dry run** (`--dry-run` / `RPG_LLM_DRY_RUN=1`): each request (URL, headers with the key replaced by
   `***redacted***` or `<unset: …>`, exact JSON body) is printed to stderr, nothing is sent, and the mock
   answers so you can keep playing. Works without a key.
-- **Cost** (rough, per turn, list prices on 2026-11-10): the system prompts are ~10k (interpreter),
-  ~12k (narrator) and ~4k (voice, talk turns only) tokens. OpenAI: interpreter on Luna ≈ $0.001, narration
-  on 6.1 Sol ≈ $0.025 + output ≈ $0.03/turn before cached-input discounts. Anthropic: Haiku 5.5 interpreter
-  ≈ $0.001-0.002, Sonnet 5.5 narration ≈ $0.03 on a cold cache and ≈ $0.004 once the system prompt is
-  cached (cache reads 5% on Sonnet 5.5; cache writes cost extra). Check the pricing pages before a long
-  session; set the cheaper model for narration via `RPG_*_MODEL_NARRATE` to cut cost.
+- **Cost** (brief estimate, list prices on 2026-11-10 from the OpenAI and Anthropic pricing pages; Grok
+  rates are unverified here): the system prompts are ~10k (interpreter), ~12k (narrator) and ~4k (voice,
+  talk turns only) tokens. With a cache hit on that static prefix, OpenAI/Anthropic bill cached input at
+  a fraction of the uncached rate (on the order of 5–10%). OpenAI: interpreter on Luna ≈ $0.001 cold,
+  narration on 6.1 Sol ≈ $0.03/turn cold. Anthropic: Haiku 5.5 interpreter ≈ $0.001–0.002, Sonnet 5.5
+  narration ≈ $0.03 cold and ≈ $0.004 once cached. Usage (`cached_tokens` / `cache_read_input_tokens`) is
+  written to the `rpg.llm` log after each call. Confirm current prices before a long session; set a
+  cheaper narrate model via `RPG_*_MODEL_NARRATE` to cut cost.
 
 Mock mode (`rpg/llm.py: MockLLM`) maps text to proposals with deterministic keyword rules and narrates
 with templates. Narration ends with "What do you do?" (except when you die): a missing closing line is appended, and
@@ -180,7 +230,7 @@ don't edit either from here). `tests/test_vendored_content.py` runs `tools/valid
 if the copy drifts; `python3 tools/check_content_drift.py --sync` re-copies.
 
 ## Turn API
-See `docs/contracts.md` (v0.10.3) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.11) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db
