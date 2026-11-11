@@ -1,4 +1,4 @@
-# JSON contracts (v0.10)
+# JSON contracts (v0.10.1)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -254,13 +254,16 @@ refused, such as `target_not_present`, `item_not_owned`, `no_new_leverage`, `ene
 timers tick, the turn counter advances). Clarify turns, malformed proposals (re-prompt errors), OOC input and,
 v0.6.1 (Lead, BUG-R3-01), input the engine couldn't map at all (`other` / `unrecognized`: typos such as
 `attck guard`, nonsense such as `xyzzy`) never cost time, in or out of combat.
-v0.9: referring to an unseen NPC **by name or real key** (e.g. `attack the guard` / `target: npc_dozing_guard`
-while that NPC is only listed as `npc_unseen_<id>`) is a **clarify by sound**: the engine asks
-("You can't tell who that is in the dark. Do you mean the one making …?"), never confirms the name,
-and does not resolve the action (that would confirm who they are). This is treated as an unresolved
-reference, not as a parsed miss. A name that matches nobody here
-(`attack the dragon`, or `talk to mara` while she is elsewhere) is unchanged: `unknown_key` /
-`elsewhere`, and still a wasted round in combat.
+v0.10.1: referring to an unseen NPC **by name or real/invented `npc_` key** (e.g. `attack the guard` /
+`target: npc_dozing_guard` / `npc_dragon`) while the room is dark: with **exactly one** living unseen
+NPC, the mock and the engine target that NPC's opaque `npc_unseen_<id>` ref and resolve the action.
+The result and narration still never confirm or reveal the name (`unseen figure`, sound only;
+`intent_summary` is rewritten by sound). With **several** unseen NPCs, this is a **clarify by sound**
+("Who do you want to attack: the one making …, or the one making …?"), never resolved (that would
+confirm who they are), treated as an unresolved reference, not a parsed miss. A name that matches
+nobody **and there is no unseen NPC here** (`attack the dragon` in an empty dark room, or `talk to mara`
+in a lit room while she is elsewhere) is unchanged: `unknown_key` / `elsewhere`, and still a wasted
+round in combat if a hostile is present.
 v0.10 stall cap (combat only): the **first** such clarify (and the first of any other no-time
 input) is still free. The **second consecutive clarify on the same unresolved reference** costs
 the round (`wasted_round: true`, the foe acts, the question is still shown). Independently, a
@@ -668,6 +671,15 @@ caller, not only the CLI). The CLI catches it and prints the same too-long messa
   `LLMError` at once. The CLI shows interpreter errors without spending a turn.
 - **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
   (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.10.1
+1. Interpreter rules 4 and 16 (Story Designer v0.10): with exactly one living unseen NPC, a
+   remembered name or real/invented `npc_` key resolves to that NPC's `npc_unseen_<id>` ref,
+   without confirming or revealing the name. The engine asks by sound only when several unseen
+   NPCs are present. The v0.10 combat stall cap still applies to that multi-NPC clarify (and to
+   other free input). An unmatched name with nobody unseen here is still `unknown_key`.
+2. No top-level `{speaker_unseen}` placeholder was added to `voice_messages`; the flag already
+   travels inside `{talk}` as `talk.speaker_unseen` (and on the voice payload for the engine).
 
 ## Changes in v0.10
 1. BUG-R6-01: player text is HTML-escaped before it is wrapped in `<player_input>`; a typed closer
