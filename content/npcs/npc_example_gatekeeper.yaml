@@ -1,4 +1,4 @@
-# NPC persona template (AGREED, matches contracts.md v0.9 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
+# NPC persona template (AGREED, matches contracts.md v0.10 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
 # Schema: content/npc_persona_schema.md. The engine loads this file. Only PUBLIC parts reach the voice prompt
 # (name, voice, traits, goals), plus the topic texts the engine allows on a given turn.
 # `secrets` and `insight_tell` are never sent to the voice prompt or the narrator, except as engine-approved text.

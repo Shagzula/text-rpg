@@ -1,6 +1,6 @@
-# JSON Shapes — AGREED (matches contracts.md v0.9)
+# JSON Shapes — AGREED (matches contracts.md v0.10)
 
-> **Status: AGREED (matches contracts.md v0.9).** Updated Nov 10, 2026 (CST). Authoritative source: `/home/box/rpg-project/code/docs/contracts.md` (v0.9, implemented in `rpg/actions.py`, `rpg/context.py`, `rpg/effects.py`, `rpg/talk.py`, `rpg/personas.py`, `rpg/rules.py`). This file is the prompt-layer summary. If they ever differ, contracts.md wins. This directory is vendored into `code/content/` (drift-tested), so it stays the source of truth. Sections (d)–(g) (NPC dialogue) are **ACCEPTED** and implemented (contracts §d). No open engine requests.
+> **Status: AGREED (matches contracts.md v0.10).** Updated Nov 10, 2026 (CST). Authoritative source: `/home/box/rpg-project/code/docs/contracts.md` (v0.10, implemented in `rpg/actions.py`, `rpg/context.py`, `rpg/effects.py`, `rpg/talk.py`, `rpg/personas.py`, `rpg/rules.py`). This file is the prompt-layer summary. If they ever differ, contracts.md wins. This directory is vendored into `code/content/` (drift-tested), so it stays the source of truth. Sections (d)–(g) (NPC dialogue) are **ACCEPTED** and implemented (contracts §d). No open engine requests.
 
 Core principle: the LLM proposes and describes, the engine decides. The engine owns every DC (authored `unlock_dc`, item `stats.dc`, NPC `defense_dc`, else the `est_difficulty` hint; a `force_open` tool caps the DC at 20). The narrator never sees `roll`, `dc`, `modifier`, `bonus`, `total`, `margin`, `needed_roll`, advantage/disadvantage, or condition `effect` math.
 
@@ -26,13 +26,13 @@ Keys: `loc_<slug>`, `npc_<slug>`, `item_<slug>` (extras `_2`, `_3`). Exits are t
 `active_conditions` (a duplicate of `player_sheet.conditions`) isn't used by the prompts.
 
 - **Darkness:** when `dark && !lit`, `description` = "It is pitch dark; you can see nothing.", `visible_items` = `[]`, and every NPC has `visible: false` (still listed; hostile ones still attack). Exits stay listed. A lit light source held or lying here lights the place. v0.6.1: looking around the room in the dark resolves with `felt` (the felt items), and the narrator lists them with the darkness text and the exits. Unseen NPCs are heard, not seen ("Close by in the dark you hear …" + their `sound`). **v0.7.1/v0.9:** each living unseen NPC is listed as exactly `{key: "npc_unseen_<id>", visible: false, sound}` (no name, real key, persona, topics or trades); `sound` = persona `dark_sound`, else "something breathing nearby" (narrated "Something breathes nearby in the dark."). Results mask such NPCs everywhere as the ref + "unseen figure" (voiced lines: `speaker_name` "a voice in the dark"). Interpreters target the ref or ask by sound; naming one is a free clarify.
-- **Articles (v0.9):** no article before a single capitalized proper name ("Mara"); multi-word names take "the"; a name starting with a/an/the is left alone; an optional `article` (`""`/`the`/`a`/`an`) on a result or persona overrides.
+- **Articles (v0.9/v0.10):** no article before a single capitalized proper name ("Mara"); multi-word names take "the"; a name starting with a/an/the is left alone; an optional `article` (`""`/`the`/`a`/`an`) on a result or persona overrides. v0.10: the persona's `article` is validated and copied onto lit `npcs_present` entries, `target` refs and `npc_actions`; unseen/masked entries never carry `name` or `article`.
 - Bands: disposition `hostile` (<= -50) / `unfriendly` (<= -10) / `neutral` / `friendly` (>= 10) / `allied` (>= 50). HP `unhurt`, `scratched`, `wounded`, `badly_wounded`, `near_death`, `down`.
 - Fixtures: `fixture: true` / tag `fixture`. They can be examined, used, and targeted. Taking one → `item_unusable` / `fixture`. You can attack only with **held** items (`item_not_owned` / `not_held`).
 
 Prompt-specific inputs: `{player_text}` (both), `{narration_result}` (narrator), and `{npc}`, `{talk}`, `{recent_dialogue}` (voice prompt, §g).
 
-**Prompt delivery (contracts v0.9 §e):** the text after each prompt's `---` line is the **system** prompt (cached), with its context section (`## Game context` / `## Setting and tone` up to the first `## Rules` / `## Hard rules`) replaced by a pointer; the **user** message is that section with `{placeholders}` filled (compact JSON). `{player_text}` arrives fenced as a data note + `<player_input>…</player_input>`. Placeholders in rules and examples are references, not slots. The interpreter's output is checked against `code/docs/action_proposal.schema.json` (strict: every action field required, talk fields nullable on all actions, `additionalProperties: false`).
+**Prompt delivery (contracts v0.10 §e):** the text after each prompt's `---` line is the **system** prompt (cached), with its context section (`## Game context` / `## Setting and tone` up to the first `## Rules` / `## Hard rules`) replaced by a pointer; the **user** message is that section with `{placeholders}` filled (compact JSON). `{player_text}` arrives as `<player_input>…</player_input>` with `&`, `<`, `>` HTML-escaped; the treat-as-data note (with how to decode the entities) is in each prompt, exactly once. The `<!-- -->` field-doc comments in each context section are moved by the engine to a cached `## Context field notes` block at the end of the system prompt, so each comment names its field. Placeholders in rules and examples are references, not slots. The interpreter's output is checked against `code/docs/action_proposal.schema.json` (strict: every action field required, talk fields nullable on all actions, `additionalProperties: false`).
 
 ---
 
@@ -178,9 +178,9 @@ As before: `unresolved_references` → the whole turn clarifies. `clarification_
 
 ---
 
-# NPC dialogue: AGREED (matches contracts.md v0.9 §d)
+# NPC dialogue: AGREED (matches contracts.md v0.10 §d)
 
-> **Status: AGREED (matches contracts.md v0.9)** (Nov 10, 2026, CST). Sections (d)–(g) are implemented in `rpg/talk.py`, `rpg/personas.py`, `rpg/context.py` and `LLMClient.voice_npc`, with the deviations listed in contracts §d (all adopted below). Persona file format: `npc_persona_schema.md`. Rationale for the separate voice call: README, "Dialogue architecture".
+> **Status: AGREED (matches contracts.md v0.10)** (Nov 10, 2026, CST). Sections (d)–(g) are implemented in `rpg/talk.py`, `rpg/personas.py`, `rpg/context.py` and `LLMClient.voice_npc`, with the deviations listed in contracts §d (all adopted below). Persona file format: `npc_persona_schema.md`. Rationale for the separate voice call: README, "Dialogue architecture".
 
 ## (d) Context: `npcs_present[].topics`, `trades`, `recent_dialogue`; `player_sheet.gold`
 
@@ -310,11 +310,13 @@ Rules:
   "talk": {"approach": "persuade", "topic": "missing_patrol", "topic_text": null,
            "disposition_band_before": "neutral", "disposition_band_after": "friendly",
            "outcome": "success", "degree": "clear", "requested_topic_status": "revealed",
-           "allowed_topics": [{"key": "missing_patrol", "text": "..."}], "refused_topics": [], "trade": null},
-  "recent_dialogue": ["(last lines this NPC said, oldest first)"]
+           "allowed_topics": [{"key": "missing_patrol", "text": "..."}], "refused_topics": [], "trade": null,
+           "speaker_unseen": false},
+  "recent_dialogue": ["(last lines this NPC said, oldest first)"],
+  "speaker_unseen": false
 }
 ```
-`talk` = the result's talk block **without `npc` and `insight_read`**, plus `outcome`/`degree`. Never included: `secrets`, `insight_tell`, knowledge text beyond `allowed_topics`, disposition integers, or check numbers.
+`talk` = the result's talk block **without `npc` and `insight_read`**, plus `outcome`/`degree`. v0.10: `speaker_unseen` (true when the player can't see the speaker) is on the payload and inside `talk`; the prompt then speaks as a voice in the dark, never self-naming, "me" mid-sentence. Dark lines still get the engine's name → I/me swap as a backstop. Never included: `secrets`, `insight_tell`, knowledge text beyond `allowed_topics`, disposition integers, or check numbers.
 
 **Output:** `{"lines": ["...", "..."]}`, 1–3 lines, each ≤ 40 words.
 
