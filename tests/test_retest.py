@@ -138,7 +138,7 @@ def test_r04_hostile_npc_present_still_talkable(demo):
     conn, cid = demo
     go(demo, "loc_storeroom")
     conn.execute("UPDATE npcs SET disposition = -100 WHERE key = 'npc_dozing_guard'")
-    r, text = say(demo, "talk", 1)
+    r, text = say(demo, "talk", 1, 1)  # parley check, then a possible NPC swing
     assert r["results"][0]["target"]["key"] == "npc_dozing_guard" and "no one here" not in text
 
 

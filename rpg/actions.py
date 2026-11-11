@@ -326,10 +326,12 @@ class Turn:
     def lit(self) -> bool:
         return effects.location_is_lit(self.conn, self.loc_id, self.cid)
 
-    def check(self, a, skill: str, dc: int, *, method: Optional[str] = None) -> rules.CheckResult:
+    def check(self, a, skill: str, dc: int, *, method: Optional[str] = None,
+              advantage: bool = False) -> rules.CheckResult:
         """Resolve a check with situational advantage: relevant tools (skill_bonus grants
         advantage) and darkness (sight skills at disadvantage). Conditions are applied by
-        the rules layer. One-check buffs for this ability are spent afterwards."""
+        the rules layer. One-check buffs for this ability are spent afterwards.
+        Callers may pass `advantage=True` for an extra source (e.g. a parley gift)."""
         char = db.load_character(self.conn, self.cid)
         sk, ab = rules.split_check(skill)
         tools = effects.tool_advantage(effects.available_tools(self.conn, self.cid, a["items_used"]),
@@ -337,7 +339,7 @@ class Turn:
         perks = effects.perk_advantage(self.conn, self.cid, method, a["items_used"])  # v0.7: e.g. gloves
         dark = sk in effects.DARK_SKILLS and not self.lit
         res = rules.resolve_skill_check(char, skill, dc, last_ditch=a["last_ditch"], roller=self.roller,
-                                        advantage=bool(tools or perks), disadvantage=dark)
+                                        advantage=bool(tools or perks or advantage), disadvantage=dark)
         effects.apply_check_consequences(self.conn, self.cid, res)
         res.log_debug(turn=self.turn, action=a["action_type"], intent=a["intent_summary"], method=method,
                       tools=[t["key"] for t in tools], dark=dark)

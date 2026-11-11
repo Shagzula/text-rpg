@@ -858,10 +858,25 @@ class MockLLM:
     BAND_BODY = {"hostile": "They glare at you.", "unfriendly": "They eye you coldly.", "neutral": "",
                  "friendly": "They seem to warm to you.", "allied": "They lean in, on your side now."}
 
+
+    def _parley_text(self, r: Dict, who: str, who_cap: str) -> str:
+        p = r["parley"]
+        gift = (p.get("gift") or {}).get("name")
+        lead = (f"You hold out the {gift} and call for a parley with {who}."
+                if gift else f"You call for a parley with {who}.")
+        if r["outcome"] == "success":
+            body = f"{self.DEGREE_WORD.get(r.get('degree') or p.get('degree') or 'clear', '')}they stand down, wary but no longer hostile."
+        else:
+            body = f"{self.FAIL_WORD.get(r.get('degree') or p.get('degree') or 'clear', '')}they are unmoved."
+        body = body[0].upper() + body[1:] if body else body
+        return f"{lead} {body}"
+
     def _talk_text(self, r: Dict, tname: str) -> str:
         t = r["talk"]
         who = npc_ref(tname, (r.get("target") or {}).get("article"))
         who_cap = npc_ref(tname, (r.get("target") or {}).get("article"), cap=True)
+        if r.get("parley"):
+            return self._parley_text(r, who, who_cap)
         out = [self.APPROACH_OPEN.get(t["approach"], "You speak with the {n}.").replace("the {n}", "{n}")
                .format(n=who)]
         if r["degree"] is not None or r["reason"] in ("auto_success",):

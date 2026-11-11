@@ -11,7 +11,7 @@ import math
 import re
 from typing import Dict, List, Optional
 
-from . import db, personas, rules, unseen
+from . import db, effects, personas, rules, unseen
 from . import inventory as inv
 
 log = logging.getLogger("rpg.debug")
@@ -41,6 +41,12 @@ RETRY_TURNS = 10        # a blocked social retry opens up again after this many 
 SOCIAL_CAP = 49         # small gains (social checks, trades) can't lift disposition into allied (>= 50)
 SOCIAL_TRY_FLAG = "social_try:"
 SOCIAL_LAST_FLAG = "social_last:"  # last subject per NPC + approach (paraphrases fold into it, BUG-R3-02)
+# v0.11 parley: talking to or gifting a hostile mid-combat is one contested social check.
+# Success sets disposition to WARY_DISPOSITION, which is in the unfriendly band (never friendly)
+# and ends the fight. The narrator-facing stance is "wary".
+WARY_DISPOSITION = -20
+PARLEY_FLAG = "parley_try:"
+PARLEY_SKILL = "persuasion"
 DETERMINERS = ("the ", "a ", "an ", "my ", "his ", "her ", "their ", "your ", "its ", "some ")
 
 
@@ -143,6 +149,91 @@ def trade_view(conn, p: Dict, key: str, band: str, status: str) -> Dict:
 # Resolution
 # ---------------------------------------------------------------------------
 
+def _in_combat(turn) -> bool:
+    return bool(effects.hostiles_here(turn.conn, turn.cid))
+
+
+def _is_hostile(npc) -> bool:
+    return rules.disposition_band(npc["disposition"]) == "hostile"
+
+
+def _gift_leverage(conn, character_id, p, items_used) -> list:
+    """Held items that count as parley leverage: on the persona gifts list, or worth >= 50."""
+    if not items_used:
+        return []
+    held = {i["key"]: i for i in inv.list_inventory(conn, character_id)}
+    valued = (p or {}).get("gifts") or {}
+    out = []
+    for k in dict.fromkeys(items_used):
+        i = held.get(k)
+        if not i:
+            continue
+        if i["template_key"] in valued or (i.get("value") or 0) >= GIFT_VALUE_THRESHOLD:
+            out.append(i)
+    return out
+
+
+def _parley(turn, a: Dict, t, p) -> Dict:
+    """One contested social check to end a fight. The player rolls the approach skill
+    (default persuasion) against the persona social DC (base + skill + hostile band).
+    A leveraging gift grants advantage (2d20 keep the higher). On success the NPC's
+    disposition becomes WARY_DISPOSITION and the gift is consumed; on failure the gift
+    stays, time passes, and the hostile acts. The 5e no-retry rule applies to repeated
+    parley against the same NPC in the same fight unless there is new leverage (a gift)."""
+    conn, npc = turn.conn, t.row
+    if a["approach"] == "gift":
+        if not a["items_used"]:
+            raise TalkReject("item_not_owned", "no_item")
+        held = {i["key"]: i for i in inv.list_inventory(conn, turn.cid)}
+        if any(k not in held for k in a["items_used"]):
+            raise TalkReject("item_not_owned", "not_held")
+    skill = a.get("skill") or PARLEY_SKILL
+    leverage = _gift_leverage(conn, turn.cid, p, a.get("items_used") or [])
+    flag = f"{PARLEY_FLAG}{t.key}"
+    prev = db.get_flag(conn, flag)
+    if prev and not _new_leverage(prev, turn.turn, npc["disposition"], [i["key"] for i in leverage]):
+        raise TalkReject("impossible_action", "no_new_leverage")
+    before = rules.disposition_band(npc["disposition"])
+    dc = personas.social_dc(p, skill, before) if p else turn.dc_for(a, t)
+    check = turn.check(a, skill, dc, advantage=bool(leverage))
+    changes, consequences, gift_used = [], [], None
+    if check.success:
+        for i in leverage:
+            inv.remove_item(conn, i["key"], 1)
+            changes.append({"type": "item_removed", "key": i["key"], "name": i["name"], "given_to": t.key})
+            db.set_flag(conn, f"{GIFT_FLAG}{t.key}:{i['template_key']}", True)
+            gift_used = {"key": i["key"], "name": i["name"], "template": i["template_key"]}
+        conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (WARY_DISPOSITION, npc["id"]))
+        after = rules.disposition_band(WARY_DISPOSITION)
+        if after != before:
+            consequences.append({"type": "npc_disposition_changed", "key": t.key, "to": after})
+        _clear_flag = db.get_flag(conn, flag)
+        if _clear_flag is not None:
+            db.set_flag(conn, flag, None)
+    else:
+        after = before
+        db.set_flag(conn, flag, {"turn": turn.turn, "disposition": npc["disposition"],
+                                 "items": [i["key"] for i in leverage], "revealed": []})
+    talk = {"npc": t.key, "approach": a["approach"], "topic": a.get("topic"), "topic_text": a.get("topic_text"),
+            "disposition_band_before": before, "disposition_band_after": after,
+            "requested_topic_status": "none", "allowed_topics": [], "refused_topics": [], "trade": None,
+            "insight_read": None}
+    if a["approach"] == "gift" or gift_used:
+        items = []
+        if gift_used:
+            items.append({"key": gift_used["key"], "name": gift_used["name"], "accepted": bool(check.success)})
+        talk["gift"] = {"status": "accepted" if check.success and gift_used else "declined" if a["approach"] == "gift"
+                        else None, "items": items}
+        if talk["gift"]["status"] is None:
+            talk["gift"]["status"] = "accepted" if gift_used else "declined"
+    r = turn.result(a, target=t, check=check, consequences=consequences, state_changes=changes)
+    r["talk"] = talk
+    r["parley"] = {"success": bool(check.success), "degree": check.degree, "skill": skill,
+                   "advantage": bool(leverage), "gift": gift_used,
+                   "stance": "wary" if check.success else None}
+    return r
+
+
 def resolve(turn, a: Dict, t) -> Dict:
     """Resolve a talk action against NPC target `t` (already validated alive and present)."""
     conn = turn.conn
@@ -152,8 +243,10 @@ def resolve(turn, a: Dict, t) -> Dict:
     approach, skill = a["approach"], a["skill"]
     disp = npc["disposition"]
     before = rules.disposition_band(disp)
+    if _is_hostile(npc) and _in_combat(turn):
+        return _parley(turn, a, t, p)
     if approach == "gift":
-        return _gift(turn, a, t, p)
+        return _gift(turn, a, t, p, raise_disposition=not _in_combat(turn))
     is_trade = approach == "trade" or bool(p and a["topic"] in (p.get("trades") or {}))
     if is_trade:
         _precheck_trade(turn, a, t, p, before)  # BUG-R2-02/03/04: rejections cost nothing
@@ -187,6 +280,8 @@ def resolve(turn, a: Dict, t) -> Dict:
 
     def set_disp(d):
         nonlocal disp
+        if _in_combat(turn) and d > 0:  # v0.11: disposition never rises during combat except via parley
+            d = 0
         new = _clamp(disp + d)
         if d > 0:  # v0.6/v0.6.1: every small gain (talk, trades) tops out at friendly; allied = gifts, quests
             new = max(disp, min(new, SOCIAL_CAP))
@@ -237,11 +332,13 @@ def resolve(turn, a: Dict, t) -> Dict:
     return r
 
 
-def _gift(turn, a, t, p) -> Dict:
+def _gift(turn, a, t, p, raise_disposition: bool = True) -> Dict:
     """approach "gift": hand over the items in `items_used` (held). Valued ones are accepted and removed,
     moving disposition by their worth with **no** friendly cap (clamped to 100); the rest are declined
     and kept. Declines: `own_stock` (the NPC trades that item away), `already_given` (that template
-    already moved this NPC), `not_valued` (not in the persona's gifts and worth < the threshold)."""
+    already moved this NPC), `not_valued` (not in the persona's gifts and worth < the threshold).
+    v0.11: while a hostile is in combat, `raise_disposition` is False so a gift to a bystander
+    is still consumed if valued but does not raise disposition."""
     conn, cid = turn.conn, turn.cid
     npc = t.row
     if not a["items_used"]:
@@ -279,6 +376,8 @@ def _gift(turn, a, t, p) -> Dict:
             db.set_flag(conn, flag, True)
             delta += d
         entries.append(entry)
+    if not raise_disposition:
+        delta = 0
     new = _clamp(disp + delta)  # gifts are not capped at friendly
     if new != disp:
         conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (new, npc["id"]))

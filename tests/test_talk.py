@@ -154,9 +154,11 @@ def test_disposition_clamps_and_persuasion_never_lowers_an_allied_npc(g):
     g["conn"].execute("UPDATE npcs SET disposition = 95 WHERE key = 'npc_mara'")
     run(g, say("persuade"), rng=Script(20))
     assert disp(g) == 95  # capped social gain can't pull an allied NPC down either
+    assert talk._clamp(-105) == -100 and talk._clamp(105) == 100
+    # Mid-combat talk is parley, which does not drop a hostile further (v0.11).
     g["conn"].execute("UPDATE npcs SET disposition = -95 WHERE key = 'npc_mara'")
-    run(g, say("intimidate"), rng=Script(1))
-    assert disp(g) == -100
+    run(g, say("intimidate"), rng=Script(1, 1))
+    assert disp(g) == -95
 
 
 def test_attack_still_makes_hostile(g):
@@ -239,8 +241,11 @@ def test_gold_never_negative_and_unknown_trade_claims_do_nothing(g):
 
 
 def test_hostile_band_has_no_trades(g):
+    # Mid-combat, a trade is a parley attempt; the trade itself is not executed.
     g["conn"].execute("UPDATE npcs SET disposition = -80 WHERE key = 'npc_mara'")
-    assert run(g, say("trade"), rng=Script(1))["results"][0]["talk"]["trade"]["status"] == "refused"
+    r = run(g, say("trade"), rng=Script(1, 1))["results"][0]
+    assert r["parley"]["success"] is False
+    assert r["talk"]["trade"] is None
 
 
 def test_guard_persona_uses_its_social_dc(g, caplog):
