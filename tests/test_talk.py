@@ -66,10 +66,14 @@ def test_validate_infers_missing_approach_and_rejects_bad_values():
     assert errors[0]["path"] == "actions[0].topic"
 
 
-def test_non_talk_actions_have_no_talk_fields():
+def test_non_talk_actions_have_null_talk_fields():
     prop, _ = actions.validate_proposal({"actions": [{"action_type": "wait", "intent_summary": "Wait."}],
                                          "ooc": None, "unresolved_references": []})
-    assert "approach" not in prop["actions"][0]
+    # v0.10: all 13 schema fields are present; talk fields are null on non-talk.
+    assert prop["actions"][0]["approach"] is None
+    assert prop["actions"][0]["topic"] is None
+    assert prop["actions"][0]["topic_text"] is None
+    assert prop["actions"][0]["quantity"] is None
 
 
 # --- topics --------------------------------------------------------------------------------------

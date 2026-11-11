@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Optional
 from . import rules, yamlish
 
 BANDS = ("hostile", "unfriendly", "neutral", "friendly", "allied")
+ARTICLES = ("", "the", "a", "an")  # optional persona/result override for narration
 BAND_DC_MOD = {"hostile": 5, "unfriendly": 2, "neutral": 0, "friendly": -2, "allied": -5}
 DEFAULT_BASE_DC = 12
 DEMO_PERSONA_DIR = Path(__file__).resolve().parent / "data" / "npcs"
@@ -55,6 +56,9 @@ def validate(p: Dict, template_keys: Iterable[str]) -> Dict:
     ds = p.get("dark_sound")
     if ds is not None and (not isinstance(ds, str) or not ds.strip()):
         bad("dark_sound must be a non-empty string")  # v0.7.1: what you hear of them in the dark
+    art = p.get("article")
+    if art is not None and art not in ARTICLES:
+        bad("article must be empty or one of: the, a, an")
     bd = p["base_disposition"]
     if not isinstance(bd, int) or not -100 <= bd <= 100:
         bad("base_disposition must be an int in -100..100")
@@ -221,6 +225,17 @@ def visible_topics(p: Optional[Dict], band: str) -> List[Dict]:
 def social_dc(p: Dict, skill: str, band: str) -> int:
     soc = p.get("social") or {}
     return int(soc.get("base_dc", DEFAULT_BASE_DC)) + int(soc.get(skill, 0) or 0) + BAND_DC_MOD[band]
+
+
+def article(p: Optional[Dict]) -> Optional[str]:
+    """The persona's article override, or None if unset. Validated values: '' / the / a / an."""
+    if not p or p.get("article") is None:
+        return None
+    return p["article"]
+
+
+def article_for(conn, npc_id: int) -> Optional[str]:
+    return article(get(conn, npc_id))
 
 
 def persona_view(p: Dict) -> Dict:

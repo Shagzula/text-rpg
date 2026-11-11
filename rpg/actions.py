@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db, effects, rules, talk, unseen
+from . import db, effects, personas, rules, talk, unseen
 from . import inventory as inv
 from . import context
 from .context import npc_hp
@@ -128,9 +128,11 @@ def validate_proposal(proposal) -> Tuple[Optional[Dict], List[Dict]]:
         cq = a.get("clarification_question")
         if cq is not None and not isinstance(cq, str):
             err(f"{p}.clarification_question", "string or null")
+        # All 13 schema fields are present on every action; talk fields are null on non-talk.
         norm = {"action_type": at, "skill": skill, "target": target, "items_used": list(items),
                 "last_ditch": ld is True, "est_difficulty": est, "intent_summary": summary,
-                "clarification_needed": cn is True, "clarification_question": cq}
+                "clarification_needed": cn is True, "clarification_question": cq,
+                "approach": None, "topic": None, "topic_text": None, "quantity": None}
         if at == "talk":
             approach = a.get("approach")
             if approach is None:  # deviation: inferred instead of re-prompting (schemas §e says required)
@@ -142,12 +144,11 @@ def validate_proposal(proposal) -> Tuple[Optional[Dict], List[Dict]]:
             for f in ("topic", "topic_text"):
                 if a.get(f) is not None and not isinstance(a.get(f), str):
                     err(f"{p}.{f}", "string or null")
-            norm.update({"approach": approach, "topic": a.get("topic"), "topic_text": a.get("topic_text")})
             q = a.get("quantity")
             if q is not None and (isinstance(q, bool) or not isinstance(q, int)):
                 err(f"{p}.quantity", "integer or null (the engine rejects values outside 1-10)")
-            if q is not None:
-                norm["quantity"] = q
+            norm.update({"approach": approach, "topic": a.get("topic"), "topic_text": a.get("topic_text"),
+                         "quantity": q})
         norm_actions.append(norm)
     if errors:
         return None, errors
@@ -183,7 +184,10 @@ class Target:
     row: Dict = field(default_factory=dict)
 
     def ref(self) -> Dict:
-        return {"key": self.key, "name": self.name}
+        out = {"key": self.key, "name": self.name}
+        if self.kind == "npc" and self.row.get("article") is not None:
+            out["article"] = self.row["article"]
+        return out
 
 
 class Reject(Exception):
@@ -225,7 +229,11 @@ class Turn:
         if n is not None:
             if n["location_id"] != self.loc_id:
                 raise Reject("target_not_present", "elsewhere")
-            return Target("npc", key, n["name"], dict(n))
+            row = dict(n)
+            art = personas.article_for(self.conn, n["id"])
+            if art is not None:
+                row["article"] = art
+            return Target("npc", key, n["name"], row)
         item = inv.get_item(c, key)
         if item is not None:
             if item["character_id"] != self.cid and item["location_id"] != self.loc_id:
@@ -377,8 +385,14 @@ class Turn:
     def _loose_target(self, key):
         if not key:
             return None
-        n = self.conn.execute("SELECT name FROM npcs WHERE key = ?", (key,)).fetchone()
-        return {"key": key, "name": n["name"] if n else None}  # a named person elsewhere (BUG-R2-07)
+        n = self.conn.execute("SELECT id, name FROM npcs WHERE key = ?", (key,)).fetchone()
+        if n is None:
+            return {"key": key, "name": None}  # a named person elsewhere (BUG-R2-07)
+        out = {"key": key, "name": n["name"]}
+        art = personas.article_for(self.conn, n["id"])
+        if art is not None:
+            out["article"] = art
+        return out
 
     # -- handlers -----------------------------------------------------------
     def do_wait(self, a, t):
@@ -866,6 +880,85 @@ def player_status(conn, character_id: int) -> Dict:
 
 
 FREE_REJECTIONS = frozenset({"unrecognized"})  # never cost a round, even in combat
+# v0.10: the second consecutive same-reference clarify in combat costs the round;
+# any 5 consecutive free (no-time) turns in combat also cost, then keep costing
+# until a resolved action resets the streak. Lit and dark both count.
+FREE_STREAK_CAP = 5
+PENDING_FLAG = "pending_clarify:"
+STREAK_FLAG = "combat_free_streak:"
+LAST_CLARIFY_FLAG = "last_free_clarify:"
+
+
+def _sig_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(_sig_text(v) for v in value)
+    return " ".join(str(value).lower().replace("_", " ").split())
+
+
+def _clarify_signature(kind: str, action: dict, raw_target=None) -> str:
+    return "|".join((
+        kind,
+        str(action.get("action_type") or ""),
+        _sig_text(raw_target if raw_target is not None else action.get("target")),
+        _sig_text(action.get("clarification_question") or action.get("intent_summary")),
+    ))
+
+
+def _pending_candidates(hidden: dict) -> list:
+    return [{"key": info["ref"], "sound": info["sound"]}
+            for info in hidden.values() if info.get("alive")]
+
+
+def _store_pending(conn, character_id: int, action: dict, question: str, hidden: dict, signature: str) -> None:
+    db.set_flag(conn, PENDING_FLAG + str(character_id), {
+        "action_type": action.get("action_type"),
+        "skill": action.get("skill"),
+        "items_used": list(action.get("items_used") or []),
+        "intent_summary": action.get("intent_summary"),
+        "last_ditch": bool(action.get("last_ditch")),
+        "question": question,
+        "signature": signature,
+        "candidates": _pending_candidates(hidden),
+    })
+
+
+def _clear_flag(conn, key: str) -> None:
+    if db.get_flag(conn, key) is not None:
+        db.set_flag(conn, key, None)
+
+
+def _clear_pending(conn, character_id: int) -> None:
+    _clear_flag(conn, PENDING_FLAG + str(character_id))
+
+
+def _reset_stall(conn, character_id: int) -> None:
+    cid = str(character_id)
+    streak = db.get_flag(conn, STREAK_FLAG + cid)
+    if streak:  # leave a never-written flag alone so rejected turns don't touch the DB
+        db.set_flag(conn, STREAK_FLAG + cid, 0)
+    _clear_flag(conn, LAST_CLARIFY_FLAG + cid)
+    _clear_pending(conn, character_id)
+
+
+def _maybe_cap_free_turn(conn, character_id: int, in_combat, question, signature: str):
+    """If this combat turn passed no time, apply the stall cap. Returns True if the
+    turn should become a wasted round (foe acts, question still shown)."""
+    if not in_combat:
+        if question:
+            # still remember the pending clarify outside combat so 'yes' / sound replies work
+            return False
+        _clear_pending(conn, character_id)
+        return False
+    cid = str(character_id)
+    streak = int(db.get_flag(conn, STREAK_FLAG + cid) or 0) + 1
+    last = db.get_flag(conn, LAST_CLARIFY_FLAG + cid)
+    db.set_flag(conn, STREAK_FLAG + cid, streak)
+    if signature:
+        db.set_flag(conn, LAST_CLARIFY_FLAG + cid, signature)
+    same = bool(question) and bool(signature) and signature == last
+    return same or streak >= FREE_STREAK_CAP
 
 
 def process_action_proposal(conn, character_id: int, proposal, rng: Optional[random.Random] = None) -> Dict[str, Any]:
@@ -890,12 +983,15 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     hidden = unseen.unseen_npcs(conn, character_id)  # v0.7.1: unseen at the start of the turn...
     named_in_dark = set()
+    raw_targets = [a.get("target") for a in prop["actions"]]
     for i, a in enumerate(prop["actions"]):
         # v0.9: a real key or a name-like slug for an unseen NPC is not resolved
         # (that would confirm who they are) and becomes a free clarify by sound.
         if unseen.named_in_dark(conn, character_id, a.get("target")):
             named_in_dark.add(i)
         a["target"] = unseen.resolve(conn, a["target"])  # opaque refs target the NPC behind them
+    clarify_action = None
+    clarify_signature = None
     npc_mark = effects.npc_condition_mark(conn)
     in_combat = effects.hostiles_here(conn, character_id)  # at the start of the turn
     start_loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()[0]
@@ -909,6 +1005,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
         question = (flagged or {}).get("clarification_question") or _generic_question(prop["unresolved_references"])
         results.append(turn.clarify(flagged))
         skipped = [_skip(a, "prior_clarify") for a in actions if a is not flagged]
+        clarify_action = flagged or {"action_type": None}
+        clarify_signature = _clarify_signature("unresolved", clarify_action, prop["unresolved_references"])
     else:
         failed: List[Dict] = []
         for i, a in enumerate(actions):
@@ -922,16 +1020,19 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 verb = "talk to" if a["action_type"] == "talk" else "attack"
                 question = turn.unseen_name_question(verb)
                 results.append(turn.clarify(a))
+                clarify_action, clarify_signature = a, _clarify_signature("named", a, raw_targets[i])
                 continue
             if a["clarification_needed"]:
                 question = a["clarification_question"] or _generic_question([a["intent_summary"]])
                 results.append(turn.clarify(a))
+                clarify_action, clarify_signature = a, _clarify_signature("needed", a, raw_targets[i])
                 continue
             if a["action_type"] in ("talk", "attack") and a["target"] is None:
                 a, ask = turn.default_npc_target(a, "talk to" if a["action_type"] == "talk" else "attack")
                 if ask:
                     question = ask
                     results.append(turn.clarify(a))
+                    clarify_action, clarify_signature = a, _clarify_signature("who", a, raw_targets[i])
                     continue
             r = turn.resolve(a)
             results.append(r)
@@ -942,12 +1043,22 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     expired: List[Dict] = []
     # Time passes (NPCs act, timers tick) only if some action actually resolved; turns that
     # were all rejected or clarification requests cost nothing.
-    time_passed = any(r["status"] == "resolved" for r in results)
+    resolved = any(r["status"] == "resolved" for r in results)
+    time_passed = resolved
     # v0.6 (Lead decision): in combat, a rejected action is a wasted round; hostiles still act.
     # v0.6.1 (Lead): only a parsed-but-rejected action wastes the round; input the engine couldn't map at
     # all (`unrecognized`: typos, nonsense) is free even in combat, like malformed input.
     wasted_round = not time_passed and bool(in_combat) and any(
         r["status"] == "rejected" and r.get("detail") not in FREE_REJECTIONS for r in results)
+    if question and clarify_action is not None:
+        _store_pending(conn, character_id, clarify_action, question, hidden, clarify_signature or "")
+    if resolved or (wasted_round and not question):
+        # a real resolved action (or a parsed rejection that already costs the round) resets the stall
+        _reset_stall(conn, character_id)
+    elif not time_passed and not wasted_round:
+        # typo / clarify / other free input: maybe cap the stall in combat
+        if _maybe_cap_free_turn(conn, character_id, in_combat, question, clarify_signature or "free"):
+            wasted_round = True
     time_passed = time_passed or wasted_round
     if time_passed:
         expired = effects.tick_npc_conditions(conn, npc_mark)

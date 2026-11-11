@@ -14,10 +14,33 @@ from typing import Callable, Dict, List, Optional, Protocol, Tuple, runtime_chec
 CLOSING_LINE = "What do you do?"
 WASTED_ROUND_LINE = "You lose precious moments, and your foe doesn't wait."
 FALLBACK_NARRATION = "The moment passes in a blur, and the details are hard to make out."
+MAX_INPUT_CHARS = 300  # every interpret() caller, not just the CLI
+AFFIRMATIONS = frozenset({"yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "do it"})
 
 
 class LLMConfigError(RuntimeError):
     """Provider misconfiguration (unknown provider, missing API key)."""
+
+
+class InputTooLong(ValueError):
+    """Player text longer than MAX_INPUT_CHARS; interpret() refuses it before any request."""
+
+    def __init__(self, length: int, limit: int = MAX_INPUT_CHARS):
+        self.length = length
+        self.limit = limit
+        super().__init__(f"input is {length} characters; the limit is {limit}")
+
+
+def check_input_length(player_text: str) -> None:
+    if len(player_text or "") > MAX_INPUT_CHARS:
+        raise InputTooLong(len(player_text or ""))
+
+
+def _fill_action_fields(action: Dict) -> Dict:
+    """Every action carries all 13 schema fields; talk fields are null on non-talk."""
+    for field in ("approach", "topic", "topic_text", "quantity"):
+        action.setdefault(field, None)
+    return action
 
 
 @runtime_checkable
@@ -210,6 +233,7 @@ class MockLLM:
 
     # -- interpreter ----------------------------------------------------------
     def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
+        check_input_length(player_text)
         # drop emoji and other symbols (BUG-13); keep letters, digits and light punctuation
         text = " ".join(re.sub(r"[^\w\s'.,!?;-]", " ", player_text).strip().lower().split())
         last_ditch = False
@@ -219,6 +243,9 @@ class MockLLM:
                 text = " ".join(text.replace(p, " ").split())
         while text.split(" ", 1)[0] in ("to", "and", "i", "then") and " " in text:
             text = text.split(" ", 1)[1]
+        pending = self._pending_reply(text, context)
+        if pending is not None:
+            return pending
         if text in OOC_WORDS:
             return {"actions": [], "ooc": {"command": OOC_WORDS[text], "text": player_text}, "unresolved_references": []}
         verb, rest = self._split_verb(text)
@@ -324,6 +351,7 @@ class MockLLM:
             self._talk(text, rest, context, action, refs)
         if last_ditch:
             action["intent_summary"] = action["intent_summary"].rstrip(".") + ", desperately, whatever it costs."
+        _fill_action_fields(action)
         return {"actions": [action], "ooc": None, "unresolved_references": refs}
 
     def _talk(self, text: str, rest: str, context: Dict, action: Dict, refs: List[str]) -> None:
@@ -494,6 +522,55 @@ class MockLLM:
         else:
             action["target"] = key
 
+    def _pending_reply(self, text: str, context: Dict):
+        """Verb-less answers to a pending dark-room clarify: 'yes' (one candidate) or a sound phrase."""
+        pending = context.get("pending_clarify") or {}
+        cands = [c for c in (pending.get("candidates") or []) if c.get("key")]
+        if not pending or not cands or not text:
+            return None
+        verb, rest = self._split_verb(text)
+        if verb is not None:
+            return None  # a new command; don't swallow 'attack the breathing' etc.
+        phrase = (rest or text).strip()
+        stop = {"the", "a", "an", "that", "those", "this", "to", "at"}
+        words = set(re.findall(r"[a-z0-9]+", phrase.lower())) - stop
+
+        def finish(target_key: str) -> Dict:
+            action = {
+                "action_type": pending.get("action_type") or "attack",
+                "skill": pending.get("skill"),
+                "target": target_key,
+                "items_used": list(pending.get("items_used") or []),
+                "last_ditch": bool(pending.get("last_ditch")),
+                "est_difficulty": pending.get("est_difficulty") or "medium",
+                "intent_summary": pending.get("intent_summary") or "Follow through.",
+                "clarification_needed": False,
+                "clarification_question": None,
+            }
+            if action["action_type"] == "talk":
+                action["approach"] = pending.get("approach") or "ask"
+                action["skill"] = action["skill"] or "persuasion"
+            _fill_action_fields(action)
+            return {"actions": [action], "ooc": None, "unresolved_references": []}
+
+        if phrase in AFFIRMATIONS or words <= (PRONOUNS | {"yes"}):
+            if len(cands) == 1:
+                return finish(cands[0]["key"])
+            return None
+        scored = []
+        for c in cands:
+            sound_words = set(re.findall(r"[a-z0-9]+", (c.get("sound") or "").lower())) - stop - {"of", "and", "something", "nearby"}
+            hit = len(words & sound_words)
+            if hit:
+                scored.append((hit, c["key"]))
+        if not scored:
+            return None
+        best = max(s for s, _ in scored)
+        top = [k for s, k in scored if s == best]
+        if len(top) == 1:
+            return finish(top[0])
+        return None
+
     # -- NPC voice (deterministic) ----------------------------------------------
     BAND_OPENER = {"hostile": "Get away from me.", "unfriendly": "Make it quick.", "neutral": "",
                    "friendly": "", "allied": ""}
@@ -646,7 +723,8 @@ class MockLLM:
         tname = (r.get("target") or {}).get("name") or "it"
         if r["status"] == "rejected" and r["reason"] == "target_not_present" and \
                 str((r.get("target") or {}).get("key", "")).startswith("npc_") and r.get("detail") != "no_target":
-            who = (r.get("target") or {}).get("name")
+            tgt = r.get("target") or {}
+            who = npc_ref(tgt.get("name"), article=tgt.get("article"), cap=True) if tgt.get("name") else None
             return f"{who} isn't here." if who else "There's nobody like that here."
         if r["status"] == "rejected" and r.get("detail") == "no_target" and r.get("action_type") == "attack":
             return "There's no one here to fight."  # BUG-R4-01: not the talk line

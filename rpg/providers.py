@@ -21,7 +21,7 @@ import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import prompts
-from .llm import LLMConfigError, MockLLM
+from .llm import LLMConfigError, MockLLM, check_input_length
 from .proposal_schema import SCHEMA_NAME, proposal_schema, voice_schema
 
 log = logging.getLogger("rpg.llm")
@@ -147,6 +147,7 @@ class _Provider:
     def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None):
         """Returns the parsed proposal dict, or the raw text when it isn't JSON (the engine's
         validate_proposal then answers with the re-prompt, once)."""
+        check_input_length(player_text)
         self._last_player_text = player_text
         system, user = prompts.interpret_messages(context, player_text)
         turns = [("user", user)]

@@ -115,20 +115,24 @@ def build_context(conn, character_id: int) -> Dict:
                 if n["alive"]:
                     npcs.append({"key": unseen.ref(n["id"]), "visible": False, "sound": unseen.sound(conn, n)})
                 continue
-            npcs.append({"key": n["key"], "name": n["name"],
-                         "disposition": rules.disposition_band(n["disposition"]),
-                         "traits": json.loads(n["traits"]),
-                         "status": "alive" if n["alive"] else "defeated",
-                         "hp_band": rules.hp_band(npc_hp(n), n["max_hp"]),
-                         "out_of_reach": bool(n["out_of_reach"]),
-                         "conditions": effects.npc_conditions(conn, n["id"]),
-                         "visible": lit, **npc_talk_context(conn, n)})
+            entry = {"key": n["key"], "name": n["name"],
+                     "disposition": rules.disposition_band(n["disposition"]),
+                     "traits": json.loads(n["traits"]),
+                     "status": "alive" if n["alive"] else "defeated",
+                     "hp_band": rules.hp_band(npc_hp(n), n["max_hp"]),
+                     "out_of_reach": bool(n["out_of_reach"]),
+                     "conditions": effects.npc_conditions(conn, n["id"]),
+                     "visible": lit, **npc_talk_context(conn, n)}
+            art = personas.article_for(conn, n["id"])
+            if art is not None:
+                entry["article"] = art  # never on unseen entries (those have no name)
+            npcs.append(entry)
         felt = [] if lit else felt_items(conn, loc["id"], character_id)
         items = [] if not lit else [{"key": i["key"], "name": i["name"], "tags": i["tags"], "fixture": i["fixture"],
                   "state": i["state"], "out_of_reach": i["out_of_reach"]}
                  for i in list_location_items(conn, loc["id"])]
     sheet = player_sheet(conn, character_id)
-    return {
+    out = {
         "location": location,
         "npcs_present": npcs,
         "visible_items": items,
@@ -141,3 +145,7 @@ def build_context(conn, character_id: int) -> Dict:
         "hp_band": rules.hp_band(ch["current_hp"], ch["max_hp"]),
         "recent_narrations": recent_narrations(conn, character_id),
     }
+    pending = db.get_flag(conn, f"pending_clarify:{character_id}")
+    if pending:
+        out["pending_clarify"] = pending  # opaque keys + sounds only; no names
+    return out

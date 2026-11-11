@@ -86,7 +86,12 @@ def mask(obj: Any, hidden: Dict[str, Dict]) -> Any:
 
     def walk(o, field=None):
         if isinstance(o, dict):
-            return {k: walk(v, k) for k, v in o.items()}
+            out = {k: walk(v, k) for k, v in o.items()}
+            # article is a naming tell: never leave it on an unseen NPC entry
+            raw_key = o.get("key")
+            if raw_key in keys or (isinstance(out.get("key"), str) and out["key"].startswith(PREFIX)):
+                out.pop("article", None)
+            return out
         if isinstance(o, list):
             return [walk(v, field) for v in o]
         if isinstance(o, str):

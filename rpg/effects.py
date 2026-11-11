@@ -13,7 +13,13 @@ from typing import Dict, List, Optional
 
 from . import db
 from . import inventory as inv
-from . import rules
+from . import personas, rules
+
+def _article(conn, npc_row) -> dict:
+    """Attach the persona article override when one is set (masked away if the NPC is unseen)."""
+    art = personas.article_for(conn, npc_row["id"])
+    return {"article": art} if art is not None else {}
+
 
 DARK_SKILLS = ("perception", "investigation")  # sight-based: disadvantage in the dark
 LIGHT_STATE = "lit"
@@ -282,8 +288,8 @@ def npc_save_condition(conn, npc: Dict, item: Dict, rng: random.Random, turn: in
         conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (npc["id"], name))
         conn.execute("INSERT INTO npc_conditions (npc_id, name, effect, duration_turns, source) VALUES (?, ?, ?, ?, ?)",
                      (npc["id"], name, json.dumps(npc_condition_effect(item, name)), turns, item["key"]))
-    return {"type": "npc_condition", "key": npc["key"], "npc_name": npc["name"], "name": name,
-            "outcome": "resisted" if resisted else "applied"}
+    return {"type": "npc_condition", "key": npc["key"], "npc_name": npc["name"], **_article(conn, npc),
+            "name": name, "outcome": "resisted" if resisted else "applied"}
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +377,8 @@ def pursuit(conn, character_id, from_location_id) -> List[Dict]:
             continue
         conn.execute("UPDATE npcs SET location_id = ? WHERE id = ?", (ch["location_id"], n["id"]))
         db.set_flag(conn, PURSUED_FLAG + n["key"], True)
-        out.append({"npc": n["key"], "name": n["name"], "action": "follow", "outcome": None, "degree": None,
+        out.append({"npc": n["key"], "name": n["name"], **_article(conn, n),
+                    "action": "follow", "outcome": None, "degree": None,
                     "hp_band": rules.hp_band(ch["current_hp"], ch["max_hp"])})
     return out
 
@@ -438,8 +445,8 @@ def make_noise(conn, character_id, item: Dict) -> List[Dict]:
         conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (n["id"], DISTRACTED))
         conn.execute("INSERT INTO npc_conditions (npc_id, name, effect, duration_turns, source) VALUES (?, ?, ?, 1, ?)",
                      (n["id"], DISTRACTED, json.dumps({"attack_disadvantage": True}), item["key"]))
-        out.append({"type": "npc_condition", "key": n["key"], "npc_name": n["name"], "name": DISTRACTED,
-                    "outcome": "applied"})
+        out.append({"type": "npc_condition", "key": n["key"], "npc_name": n["name"], **_article(conn, n),
+                    "name": DISTRACTED, "outcome": "applied"})
     return out
 
 
@@ -462,7 +469,7 @@ def npc_phase(conn, character_id, rng: random.Random, turn: int, skip=()) -> Lis
                           (ch["location_id"],)).fetchall():
         if rules.disposition_band(n["disposition"]) != "hostile" or n["key"] in skip:
             continue
-        entry = {"npc": n["key"], "name": n["name"]}
+        entry = {"npc": n["key"], "name": n["name"], **_article(conn, n)}
         blocked = npc_incapacitated(conn, n["id"])
         if blocked:
             out.append({**entry, "action": "none", "reason": blocked, "outcome": None, "degree": None,

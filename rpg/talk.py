@@ -493,6 +493,22 @@ def voice_input_talk(r: Dict) -> Dict:
     return talk
 
 
+
+def first_person_swap(line: str, name: str) -> str:
+    """Replace the speaker's name (and a leading the/a/an) with I or me.
+
+    A mid-sentence 'ask for the Gatekeeper' becomes 'ask for me', never 'ask for I'.
+    """
+    if not line or not name:
+        return line
+    pat = re.compile(rf"(?i)(?<!\w)(?:the |an |a )?{re.escape(name)}(?!\w)")
+
+    def repl(m):
+        prefix = line[:m.start()].rstrip()
+        return "I" if (not prefix or prefix[-1] in ".!?;:") else "me"
+    return pat.sub(repl, line)
+
+
 def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = None) -> Dict:
     """Fill result['dialogue'] for each resolved talk with a persona NPC. Mutates and returns it."""
     dialogue = result.setdefault("dialogue", [])
@@ -506,7 +522,11 @@ def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = N
         if not p or not hasattr(llm, "voice_npc"):
             continue
         talk = voice_input_talk(r)
-        payload = {"player_text": player_text, "talk": talk, "recent_dialogue": recent_dialogue(conn, npc["id"])}
+        # speaker_unseen sits on both the voice payload and the {talk} block the prompt already
+        # interpolates, so the live model sees it without a prompt-file change.
+        talk["speaker_unseen"] = bool(dark)
+        payload = {"player_text": player_text, "talk": talk, "recent_dialogue": recent_dialogue(conn, npc["id"]),
+                   "speaker_unseen": bool(dark)}
         lines = None
         for attempt in range(2):  # one retry
             try:
@@ -528,7 +548,7 @@ def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = N
                 continue
             if dark:
                 dialogue.append({"speaker_key": shown_key, "speaker_name": unseen.VOICE_NAME,
-                                 "line": ln.replace(npc["name"], "I"), "source": "npc_llm"})
+                                 "line": first_person_swap(ln, npc["name"]), "source": "npc_llm"})
             else:
                 dialogue.append({"speaker_key": npc["key"], "speaker_name": npc["name"], "line": ln,
                                  "source": "npc_llm"})
