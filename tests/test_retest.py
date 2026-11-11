@@ -520,7 +520,8 @@ def test_dark_scene_says_you_hear_npcs_not_see_them(demo):
     hostile_guard(demo)
     demo[0].execute("UPDATE location_exits SET locked = 0")
     _, out = say(demo, "go down")
-    assert "You see" not in out and "in the dark you hear Dozing Guard" in out
+    assert "You see" not in out and "Dozing Guard" not in out  # v0.7.1: a sound, never a name
+    assert "in the dark you hear slow, heavy breathing" in out
     assert "By touch you know of the Rusty lever" in out
 
 

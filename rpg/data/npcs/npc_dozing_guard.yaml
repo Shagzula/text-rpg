@@ -15,6 +15,7 @@ goals:
   - "Get through the night without anyone noticing he slept."
   - "Keep folk out of the cellar, as he was told."
 
+dark_sound: "slow, heavy breathing and the creak of leather"
 base_disposition: 0
 
 combat:              # balance numbers unchanged from v0.4 (world.GUARD); persona is now the source

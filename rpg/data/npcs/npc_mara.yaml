@@ -16,6 +16,7 @@ goals:
   - "Sell off the last of the day's stock before the square empties."
   - "Keep out of the old merchant's business."
 
+dark_sound: "the rustle of a heavy apron and a muttered complaint about the lamp oil"
 base_disposition: 20
 
 combat:

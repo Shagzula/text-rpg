@@ -160,6 +160,11 @@ def _words(text: str) -> set:
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS}
 
 
+PRONOUNS = {"it", "them", "him", "her"}
+UNSEEN_WORDS = "unseen figure someone something somebody whoever noise sound voice"
+GENERIC_SOUND = "something breathing nearby"  # = unseen.GENERIC_SOUND
+
+
 class MockLLM:
     """Deterministic keyword interpreter and templated narrator for offline play and tests."""
 
@@ -286,7 +291,7 @@ class MockLLM:
         """talk/ask/persuade/lie/threaten/read/buy/sell/bye ... -> approach, topic, topic_text."""
         first = text.split()[0]
         approach = TALK_APPROACH_WORDS.get(first, "ask")
-        npcs = [n for n in context.get("npcs_present", []) if n.get("status") == "alive"]
+        npcs = [n for n in context.get("npcs_present", []) if n.get("status", "alive") == "alive"]
         rest = re.sub(r"^(to|with|at)\s+", "", rest)
         npc_txt, subject = rest, ""
         if approach == "gift":
@@ -297,6 +302,8 @@ class MockLLM:
             else:
                 npc_txt, subject = rest, ""
                 for n in context.get("npcs_present", []):
+                    if not n.get("name"):
+                        continue  # unseen in the dark: no name to say
                     for nm in sorted({n["name"].lower(), n["name"].lower().split()[-1]}, key=len, reverse=True):
                         for pre in ("the ", ""):
                             if rest.startswith(pre + nm + " "):
@@ -363,7 +370,7 @@ class MockLLM:
             topic_text = cite
         if offered:
             action["items_used"] = offered
-        name = npc["name"] if npc else (npc_txt or "them")
+        name = (npc.get("name") or "someone in the dark") if npc else (npc_txt or "them")
         about = f" about {subject if cite else (topic_text or subject)}" if (topic_text or subject) and \
             approach != "trade" else \
             (f" for {subject}" if subject else "")
@@ -402,7 +409,8 @@ class MockLLM:
         out = []
         loc = context.get("location") or {}
         if "npc" in pools:
-            out += [(n["key"], n["name"]) for n in context.get("npcs_present", [])]
+            out += [(n["key"], n.get("name") or f"{UNSEEN_WORDS} {n.get('sound', '')}")
+                    for n in context.get("npcs_present", [])]
         if "item" in pools:
             out += [(i["key"], i["name"]) for i in context.get("visible_items", []) + context.get("felt_items", [])]
         if "inv" in pools:
@@ -415,6 +423,12 @@ class MockLLM:
 
     def _match(self, phrase: str, context: Dict, pools, prefix: str):
         """Return (key, ambiguous_candidates). Unknown things get a best-guess slug."""
+        if "npc" in pools and set(re.findall(r"[a-z]+", phrase.lower())) - {"the"} <= PRONOUNS:
+            dark = [n["key"] for n in context.get("npcs_present", []) if not n.get("visible", True)]
+            if len(dark) == 1:  # v0.7.1: "attack it" in the dark means the one thing you can hear
+                return dark[0], []
+            if dark:
+                return None, sorted(dark)  # which of the sounds?
         want = _words(phrase)
         if not want:
             return None, []
@@ -532,13 +546,14 @@ class MockLLM:
     def _describe_scene(self, context: Dict, felt_line: bool = True) -> str:
         loc = context.get("location") or {}
         parts = [f"You are in the {loc.get('name', 'unknown place')}. {loc.get('description', '')}".strip()]
-        alive = [n for n in context.get("npcs_present", []) if n.get("status") == "alive"]
+        alive = [n for n in context.get("npcs_present", []) if n.get("status", "alive") == "alive"]
         seen = [n["name"] for n in alive if n.get("visible", True)]
-        heard = [n["name"] for n in alive if not n.get("visible", True)]
+        heard = [n.get("sound") for n in alive if not n.get("visible", True)]
         if seen:
             parts.append("You see " + _join(seen) + ".")
-        if heard:  # in the dark: you can hear them, not see them
-            parts.append("Close by in the dark you hear " + _join(heard) + ".")
+        for snd in heard:  # v0.7.1: in the dark, a sound only, never a name
+            parts.append(f"Close by in the dark you hear {snd}." if snd and snd != GENERIC_SOUND
+                         else "Something breathes nearby in the dark.")
         items = [i["name"] for i in context.get("visible_items", [])]
         if items:
             parts.append("Nearby: " + _join(items) + ".")

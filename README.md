@@ -63,7 +63,7 @@ mara`) or a story event takes them further. `trade` alone lists the deals;
 
 Gear (contracts v0.7): a rope helps you climb (athletics moves, or when you use it); worn work gloves help
 with climbing and rough or sharp things; a worn leather cap shrugs off one daze or stun per rest; blowing a
-signal whistle is heard next door and throws a hostile off its next swing (once per foe).
+signal whistle is heard next door and throws a hostile off its next swing (once per foe). (A template's `stats.noise` can change that.) In the dark you never learn who is there, only what you hear (a persona's `dark_sound`); `attack it` / `talk to whoever is there` still work.
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,

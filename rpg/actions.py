@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db, effects, rules, talk
+from . import db, effects, rules, talk, unseen
 from . import inventory as inv
 from . import context
 from .context import npc_hp
@@ -871,6 +871,9 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 "npc_actions": [], "expired": [], "defeat": death(), "clarification_question": None,
                 "time_passed": False}
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
+    hidden = unseen.unseen_npcs(conn, character_id)  # v0.7.1: unseen at the start of the turn...
+    for a in prop["actions"]:
+        a["target"] = unseen.resolve(conn, a["target"])  # opaque refs target the NPC behind them
     npc_mark = effects.npc_condition_mark(conn)
     in_combat = effects.hostiles_here(conn, character_id)  # at the start of the turn
     start_loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()[0]
@@ -937,7 +940,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
         out["skipped"] = skipped
     if wasted_round:
         out["wasted_round"] = True
-    return out
+    hidden.update(unseen.unseen_npcs(conn, character_id))  # ...or at its end: never named
+    return unseen.mask(out, hidden)
 
 
 def death() -> Dict:

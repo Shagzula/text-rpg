@@ -11,7 +11,7 @@ import math
 import re
 from typing import Dict, List, Optional
 
-from . import db, personas, rules
+from . import db, personas, rules, unseen
 from . import inventory as inv
 
 log = logging.getLogger("rpg.debug")
@@ -499,7 +499,9 @@ def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = N
     for r in result.get("results", []):
         if r.get("action_type") != "talk" or r.get("status") != "resolved" or "talk" not in r:
             continue
-        npc = conn.execute("SELECT * FROM npcs WHERE key = ?", (r["talk"]["npc"],)).fetchone()
+        shown_key = r["talk"]["npc"]
+        dark = shown_key != unseen.resolve(conn, shown_key)  # v0.7.1: masked as an opaque ref
+        npc = conn.execute("SELECT * FROM npcs WHERE key = ?", (unseen.resolve(conn, shown_key),)).fetchone()
         p = npc and personas.get(conn, npc["id"])
         if not p or not hasattr(llm, "voice_npc"):
             continue
@@ -524,7 +526,12 @@ def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = N
             if leaks(ln, hidden):
                 log.debug("voice line dropped by secret lint: %r", ln)
                 continue
-            dialogue.append({"speaker_key": npc["key"], "speaker_name": npc["name"], "line": ln, "source": "npc_llm"})
+            if dark:
+                dialogue.append({"speaker_key": shown_key, "speaker_name": unseen.VOICE_NAME,
+                                 "line": ln.replace(npc["name"], "I"), "source": "npc_llm"})
+            else:
+                dialogue.append({"speaker_key": npc["key"], "speaker_name": npc["name"], "line": ln,
+                                 "source": "npc_llm"})
             conn.execute("INSERT INTO npc_dialogue_log (npc_id, turn, line) VALUES (?, ?, ?)",
                          (npc["id"], result.get("turn"), ln))
     return result

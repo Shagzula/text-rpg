@@ -63,6 +63,16 @@ Principles
   lit light source (`items.state = "lit"`) is held by the player or lies here. When `dark && !lit`:
   `description` is replaced by "It is pitch dark; you can see nothing.", `visible_items` is `[]`, and every
   NPC has `visible: false` (still listed: you can hear them, and hostile ones still attack). Exits stay listed.
+- **v0.7.1 unseen NPCs are never named.** In `dark && !lit` each *living* NPC here is listed as exactly
+  `{"key": "npc_unseen_<id>", "visible": false, "sound": "<text>"}`: no name, real key, status, persona,
+  topics or trades. `sound` is the persona's optional `dark_sound` (e.g. "slow, heavy breathing"), else the
+  generic "something breathing nearby" (narrated as "Something breathes nearby in the dark."). Defeated NPCs
+  make no sound and aren't listed. The ref is stable (from the NPC's row id) and opaque; interpreters target
+  the NPC with it (`attack it`, `talk to whoever is there`), and the engine maps it back. In the engine
+  result, every key of an NPC that was unseen at the start or end of the turn is replaced by its ref, and
+  its `name` / `npc_name` / `speaker_name` by "unseen figure" (voiced lines: `speaker_name` "a voice in the
+  dark"), anywhere in the result (`results`, `consequences`, `npc_actions` incl. `follow`, `talk.npc`,
+  `dialogue`). Narrators describe such NPCs by sound only.
 - `exits[].lockable` = it has an authored `unlock_dc` (so "the lock" can mean it even after it's opened).
 - v0.5 `felt_items`: when `dark && !lit`, the fixtures here (`[{key, name, fixture}]`, e.g. a lever)
   that can be found and used by touch. v0.6: once a dark search of this place has succeeded (world flag
@@ -321,7 +331,7 @@ State change types: `moved_to_location`, `exit_state`, `item_added`, `item_remov
 | `item_rations` | `effect: sustenance` | Eaten on `rest` for a full heal (see `rest`). Eating outside a rest just spends it. |
 | `item_lockpicks`, `item_crowbar`, `item_healers_kit` | `enables`, `skill_bonus` | See Tools. `grants: required_for_check` (lockpicks) adds no bonus; the requirement is enforced through `enables: pick_lock`. |
 | `item_rope` (v0.7) | `subcategory: climbing` (tag `climbing`); `use_note` "enables climbing/descending; advantage on athletics climb checks when anchored" | Any template with `stats.subcategory: climbing` gets the default stats `enables: [climb]`, `skill_bonus: {skill: athletics, grants: advantage}` (`inventory.SUBCATEGORY_DEFAULTS`; keys the template sets itself win). A `move` with `skill: athletics` is method `climb`: a held rope gives advantage automatically (`tool_used`). Any other athletics check gets it only when the rope is in `items_used` ("anchored"). No advantage for forcing doors etc. Without a rope a climb is a plain check (the slice has no climb-only exits yet). |
-| `item_signal_whistle` (v0.7) | `subcategory: signal`; `use_note` "loud noise audible ~600 ft; can distract or summon"; `uses: null` (unlimited) | `use_item` (held, else `item_not_owned` / `not_held`) resolves with consequence `noise_made {key, name, heard_by: [npc keys]}`: every living NPC here or one exit away. Each living, hostile, non-incapacitated NPC **here** that no noise has distracted before (world flag `noise_distracted:<npc>`, once per NPC per game) gets condition `distracted` (1 turn, effect `{attack_disadvantage: true}`; consequence `npc_condition {key, npc_name, name: "distracted", outcome: "applied"}`): its attack this turn rolls 2d20 and keeps the lower. "Summon" isn't modelled. The tag `noisy` alone (crowbar, armor) is not a whistle. |
+| `item_signal_whistle` (v0.7; v0.7.1 `stats.noise`) | `stats.noise` if set, e.g. `{distract: next_attack, once_per_foe: true}` (also `heard_range: adjacent|room`); else `subcategory: signal` with no `effect` (= the defaults `{heard_range: adjacent, distract: next_attack, once_per_foe: true}`, `effects.DEFAULT_NOISE`; keys given override them). `distract` other than `next_attack` (e.g. `null`) = noise only; `once_per_foe: false` = the flag isn't checked. Old row: `use_note` "loud noise audible ~600 ft; can distract or summon"; `uses: null` (unlimited) | `use_item` (held, else `item_not_owned` / `not_held`) resolves with consequence `noise_made {key, name, heard_by: [npc keys]}`: every living NPC here or one exit away. Each living, hostile, non-incapacitated NPC **here** that no noise has distracted before (world flag `noise_distracted:<npc>`, once per NPC per game) gets condition `distracted` (1 turn, effect `{attack_disadvantage: true}`; consequence `npc_condition {key, npc_name, name: "distracted", outcome: "applied"}`): its attack this turn rolls 2d20 and keeps the lower. "Summon" isn't modelled. The tag `noisy` alone (crowbar, armor) is not a whistle. |
 
 ### Equipment perks (v0.7; head / hands / feet house rules)
 The YAML gives these perks as `use_note` prose; the engine's defaults (`effects.EQUIP_PERKS`, by template) apply
@@ -578,8 +588,15 @@ falls back to indirect speech).
 ## Changes in v0.7.1 (engine features FROZEN for the slice after this)
 1. Overwhelming NPC hits daze the player for 1 round (`npc_actions[].dazed`); the leather cap's once-per-rest
    cancel applies. Player conditions from the NPC phase skip that turn's tick.
-2. Content re-synced: items v0.8 (structured `perk` / rope `enables`+`skill_bonus`, equal to the engine
-   defaults) and gatekeeper `gifts`.
+2. Content re-synced (twice): items v0.8 (structured `perk` / rope `enables`+`skill_bonus`, equal to the
+   engine defaults) and gatekeeper `gifts`; then the updated prompts/schema/README. Structured fields are
+   read when present; `SUBCATEGORY_DEFAULTS` / `EQUIP_PERKS` stay the fallback when a template omits them
+   (tested with field-less variants).
+3. Darkness never names an unseen NPC: context carries `{key: npc_unseen_<id>, visible: false, sound}`
+   only; results are masked (ref + "unseen figure"); optional persona field `dark_sound` (validated
+   non-empty string; demo Mara and guard have one), generic fallback. See (a) Darkness.
+4. Whistle: structured `stats.noise` (`distract`, `once_per_foe`, `heard_range`) with the subcategory
+   `signal` defaults as the fallback.
 **Feature freeze:** from v0.7.1 the slice's engine rules are frozen; later changes are bug fixes, content
 sync and the LLM layer (v0.8).
 

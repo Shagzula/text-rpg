@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List
 
-from . import db, effects, personas, rules, talk
+from . import db, effects, personas, rules, talk, unseen
 from .inventory import list_inventory, list_location_items
 
 RECENT_NARRATIONS = 3
@@ -111,6 +111,10 @@ def build_context(conn, character_id: int) -> Dict:
                     "dark": bool(loc["dark"]), "lit": lit,
                     "exits": location_exits(conn, loc["id"])}
         for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? ORDER BY id", (loc["id"],)):
+            if not lit:  # v0.7.1: only a sound and an opaque ref; the silent dead aren't noticed
+                if n["alive"]:
+                    npcs.append({"key": unseen.ref(n["id"]), "visible": False, "sound": unseen.sound(conn, n)})
+                continue
             npcs.append({"key": n["key"], "name": n["name"],
                          "disposition": rules.disposition_band(n["disposition"]),
                          "traits": json.loads(n["traits"]),

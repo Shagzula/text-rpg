@@ -52,6 +52,9 @@ def validate(p: Dict, template_keys: Iterable[str]) -> Dict:
     v = p["voice"]
     if not isinstance(v, dict) or not v.get("style") or not isinstance(v.get("sample_phrases"), list):
         bad("voice needs style and sample_phrases")
+    ds = p.get("dark_sound")
+    if ds is not None and (not isinstance(ds, str) or not ds.strip()):
+        bad("dark_sound must be a non-empty string")  # v0.7.1: what you hear of them in the dark
     bd = p["base_disposition"]
     if not isinstance(bd, int) or not -100 <= bd <= 100:
         bad("base_disposition must be an int in -100..100")
