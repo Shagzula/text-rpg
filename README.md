@@ -180,7 +180,7 @@ don't edit either from here). `tests/test_vendored_content.py` runs `tools/valid
 if the copy drifts; `python3 tools/check_content_drift.py --sync` re-copies.
 
 ## Turn API
-See `docs/contracts.md` (v0.10.1) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.10.2) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db

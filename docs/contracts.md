@@ -1,4 +1,4 @@
-# JSON contracts (v0.10.1)
+# JSON contracts (v0.10.2)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -274,6 +274,16 @@ lit or dark — also becomes a wasted round, and later consecutive free turns ke
 candidate) or a sound phrase such as `the breathing` carries out the original action against that
 `npc_unseen_*` target. OOC commands and malformed proposals (re-prompt errors) never enter this
 streak: they are not turns.
+
+v0.10.2: the same-reference cap compares the **resolved candidate set** (opaque refs in the
+dark, real keys when lit), not the player's wording, so `attack the guard` and `attack the
+dozing guard` are the same reference. A verb-less `yes` / `ok` / `it` (etc.) while a pending
+clarify has **several** candidates **re-asks the same sound question**; it is not
+`unrecognized`. The first such re-ask is free and does **not** increment the free-streak (it
+does not consume a stall slot). The second consecutive affirmation re-ask of the same pending
+clarify **costs the round** (foe acts, question still shown), so `yes` cannot be used to stall.
+`yes` with nothing pending stays `unrecognized` and counts toward the 5-streak.
+
 
 | turn contains | outside combat | hostile in the room at turn start |
 |---|---|---|
@@ -671,6 +681,17 @@ caller, not only the CLI). The CLI catches it and prints the same too-long messa
   `LLMError` at once. The CLI shows interpreter errors without spending a turn.
 - **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
   (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.10.2
+1. BUG-R7-01: every mock/engine line that names an NPC goes through the article-aware `npc_ref`,
+   including the player's attack and miss lines ("Your attack lands on the Gatekeeper.",
+   "The Gatekeeper avoids your attack."). `article: ""` drops the default "the".
+2. BUG-R7-02: `yes` (and other affirmations/bare pronouns) with several pending sound candidates
+   re-asks the clarify by sound. The first re-ask is free and does not increment the combat
+   free-streak; the second consecutive re-ask of the same pending question costs the round, so
+   it is not a stall loophole. `yes` with nothing pending is still `unrecognized`.
+3. BUG-R7-03: the same-reference clarify cap is the action type plus the resolved candidate set,
+   not the spelling of the player's words.
 
 ## Changes in v0.10.1
 1. Interpreter rules 4 and 16 (Story Designer v0.10): with exactly one living unseen NPC, a
