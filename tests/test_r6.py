@@ -151,7 +151,7 @@ def test_voice_payload_sets_speaker_unseen_and_avoids_ask_for_I(demo):
 
 def test_voice_payload_speaker_unseen_is_false_when_lit(demo):
     conn, cid = demo
-    go(demo, "loc_back_hall")  # Mara is here in the demo slice
+    go(demo, "loc_town_square")  # Mara is here in the demo slice
 
     class Stub:
         payload = None
