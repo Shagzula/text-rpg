@@ -216,3 +216,55 @@ def test_blow_the_whistle_through_the_mock(tmp_path):
     out = llm.narrate_safely(m, r, build_context(conn, cid))
     assert "shrills" in out and "distracted" in out and "avoid the blow" in out
     conn.close()
+
+
+# --- v0.7.1: an overwhelming NPC hit dazes for 1 round ----------------------------------------------
+
+def conds(w):
+    return [r[0] for r in w["conn"].execute("SELECT name FROM character_conditions")]
+
+
+def test_overwhelming_hit_dazes_for_one_round(w):
+    hostile(w)
+    r = run(w, act("wait"), rng=Script(20, 1))  # 20 + 2 vs defense 12: margin 10 = overwhelming
+    a = r["npc_actions"][0]
+    assert (a["outcome"], a["degree"], a["dazed"]) == ("success", "overwhelming", "applied")
+    assert conds(w) == ["dazed"] and r["expired"] == []  # doesn't tick away on the turn it lands
+    rng = Script(18, 4, 5)  # dazed: the player's check rolls 2d20 and keeps the lower (4); guard misses (5)
+    r = run(w, act("other", skill="athletics", intent="Shove a crate."), rng=rng)
+    assert r["results"][0]["outcome"] == "failure" and checks_rolled(rng)
+    assert {"type": "condition_expired", "target": "self", "name": "dazed"} in r["expired"] and conds(w) == []
+
+
+def test_clear_hit_does_not_daze(w):
+    hostile(w)
+    r = run(w, act("wait"), rng=Script(15, 1))  # margin 5: clear
+    assert r["npc_actions"][0]["degree"] == "clear" and "dazed" not in r["npc_actions"][0] and conds(w) == []
+
+
+def test_daze_on_a_killing_blow_is_not_applied(w):
+    hostile(w)
+    w["conn"].execute("UPDATE characters SET current_hp = 1")
+    r = run(w, act("wait"), rng=Script(20, 1))
+    assert "dazed" not in r["npc_actions"][0] and r["defeat"]
+
+
+def test_leather_cap_cancels_one_daze_per_rest(w):
+    hostile(w)
+    give(w, "item_leather_cap", equip=True)
+    r = run(w, act("wait"), rng=Script(20, 1))
+    a = r["npc_actions"][0]
+    assert a["dazed"] == "negated" and a["negated_by"] == {"key": "item_leather_cap", "name": "Leather Cap"}
+    assert conds(w) == []
+    r = run(w, act("wait"), rng=Script(20, 1))  # spent until a rest
+    assert r["npc_actions"][0]["dazed"] == "applied"
+
+
+def test_daze_narration(tmp_path):
+    from rpg import llm
+    m = llm.MockLLM()
+    base = {"npc": "npc_x", "name": "Dozing Guard", "action": "attack", "outcome": "success",
+            "degree": "overwhelming", "hp_band": "wounded"}
+    assert "you're dazed" in m._npc_action_text({**base, "dazed": "applied"})
+    assert "Leather Cap takes the worst" in m._npc_action_text(
+        {**base, "dazed": "negated", "negated_by": {"key": "item_leather_cap", "name": "Leather Cap"}})

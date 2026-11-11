@@ -512,7 +512,10 @@ class MockLLM:
         if a.get("outcome") == "success":
             how = {"narrow": " a glancing blow", "clear": "", "overwhelming": " a brutal blow"}.get(a.get("degree"), "")
             lead = f"The {name} lands{how} on you." if how else f"The {name} hits you."
-            return f"{lead} {self.HURT_TEXT.get(a.get('hp_band'), '')}".strip()
+            daze = {"applied": " Your head rings; you're dazed.",
+                    "negated": f" Your {(a.get('negated_by') or {}).get('name', 'gear')} takes the worst of it."
+                    }.get(a.get("dazed"), "")
+            return f"{lead} {self.HURT_TEXT.get(a.get('hp_band'), '')}".strip() + daze
         return f"The {name} attacks, but you avoid the blow."
 
     @staticmethod

@@ -923,8 +923,9 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     if time_passed:
         expired = effects.tick_npc_conditions(conn, npc_mark)
         npc_actions = effects.pursuit(conn, character_id, start_loc)
+        player_mark = effects.player_condition_mark(conn)
         npc_actions += effects.npc_phase(conn, character_id, rng, turn.turn, skip={f["npc"] for f in npc_actions})
-        expired += effects.tick(conn, character_id)
+        expired += effects.tick(conn, character_id, player_mark)
     else:
         _undo_turn(conn, character_id)
         turn.turn -= 1

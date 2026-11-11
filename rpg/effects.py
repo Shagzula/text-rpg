@@ -310,12 +310,19 @@ def tick_npc_conditions(conn, applied_before: int) -> List[Dict]:
     return out
 
 
-def tick(conn, character_id) -> List[Dict]:
+def player_condition_mark(conn) -> int:
+    return conn.execute("SELECT COALESCE(MAX(id), 0) FROM character_conditions").fetchone()[0]
+
+
+def tick(conn, character_id, applied_before: Optional[int] = None) -> List[Dict]:
     """End of turn: timed player conditions and lit light sources count down; at 0 they
-    expire. (NPC conditions tick earlier, see tick_npc_conditions.) Returns `expired` entries."""
+    expire. (NPC conditions tick earlier, see tick_npc_conditions.) Returns `expired` entries.
+    v0.7.1: conditions with id > applied_before (inflicted in this turn's NPC phase, e.g. dazed) don't
+    tick this turn, so "1 round" covers the player's next turn."""
     out: List[Dict] = []
     conn.execute("UPDATE character_conditions SET duration_turns = duration_turns - 1 "
-                 "WHERE character_id = ? AND duration_turns IS NOT NULL", (character_id,))
+                 "WHERE character_id = ? AND duration_turns IS NOT NULL AND id <= ?",
+                 (character_id, applied_before if applied_before is not None else 1 << 62))
     for r in conn.execute("SELECT id, name FROM character_conditions WHERE character_id = ? AND duration_turns <= 0",
                           (character_id,)).fetchall():
         conn.execute("DELETE FROM character_conditions WHERE id = ?", (r["id"],))
@@ -385,6 +392,7 @@ def hostile_nearby(conn, location_id) -> Optional[str]:
 
 
 DISTRACTED = "distracted"
+DAZED = "dazed"  # v0.7.1: from an overwhelming NPC hit; disadvantage on every check and attack for 1 round
 WHISTLED_FLAG = "noise_distracted:"
 
 
@@ -456,6 +464,15 @@ def npc_phase(conn, character_id, rng: random.Random, turn: int, skip=()) -> Lis
                     "hp_band": rules.hp_band(hp, ch["max_hp"])})
         if hp <= 0:
             break
+        if hit and rules.degree_band(margin) == "overwhelming":  # v0.7.1: a crushing blow dazes for 1 round
+            res = add_player_condition(conn, character_id, rules.Condition(
+                name=DAZED, effect={"disadvantage": ["all"]}, lasting=False, duration_turns=1, source=n["key"],
+                description="Your head rings from the blow", severity=1))
+            if "negated_by" in res:
+                out[-1]["dazed"] = "negated"
+                out[-1]["negated_by"] = res["negated_by"]
+            else:
+                out[-1]["dazed"] = "applied"
     if hp != ch["current_hp"]:
         conn.execute("UPDATE characters SET current_hp = ? WHERE id = ?", (hp, character_id))
     return out

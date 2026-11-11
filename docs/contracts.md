@@ -1,4 +1,4 @@
-# JSON contracts (v0.7)
+# JSON contracts (v0.7.1)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -355,6 +355,13 @@ margin bands. The phase stops as soon as the player is at HP <= 0. NPC columns (
 no body armor: 10 + DEX mod. Plus every other equipped item's `ac_bonus` (shields, accessories). The
 premade (DEX 14, no armor) has 12.
 
+v0.7.1: a hit with degree `overwhelming` (margin >= 10) that doesn't drop the player also inflicts the
+condition `dazed` (1 round; effect `{disadvantage: ["all"]}`: every check and attack at disadvantage) through
+`effects.add_player_condition`, so a worn leather cap can cancel it (once per rest). The entry gets
+`dazed: "applied"`, or `dazed: "negated"` + `negated_by: {key, name}`. Conditions inflicted in the NPC phase
+don't tick at the end of that turn, so the daze covers the player's next turn and expires at its end
+(`condition_expired`).
+
 `npc_actions[]` entry: `{npc, name, action: "attack" | "none" | "follow", outcome: "success" | "failure" | null,
 degree, hp_band}` (`reason` on `none`). `hp_band` is the **player's** band after that action. No numbers;
 rolls and damage go to `rpg.debug`.
@@ -567,6 +574,14 @@ falls back to indirect speech).
 9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
+
+## Changes in v0.7.1 (engine features FROZEN for the slice after this)
+1. Overwhelming NPC hits daze the player for 1 round (`npc_actions[].dazed`); the leather cap's once-per-rest
+   cancel applies. Player conditions from the NPC phase skip that turn's tick.
+2. Content re-synced: items v0.8 (structured `perk` / rope `enables`+`skill_bonus`, equal to the engine
+   defaults) and gatekeeper `gifts`.
+**Feature freeze:** from v0.7.1 the slice's engine rules are frozen; later changes are bug fixes, content
+sync and the LLM layer (v0.8).
 
 ## Changes in v0.7
 1. Rope: `subcategory: climbing` items are climbing tools; athletics `move` = method `climb`.
