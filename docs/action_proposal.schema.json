@@ -1,0 +1,201 @@
+{
+  "type": "object",
+  "properties": {
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "enum": [
+              "move",
+              "examine",
+              "talk",
+              "attack",
+              "use_item",
+              "skill_check",
+              "take",
+              "drop",
+              "equip",
+              "unequip",
+              "inventory",
+              "rest",
+              "wait",
+              "other"
+            ]
+          },
+          "skill": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "acrobatics",
+              "animal_handling",
+              "arcana",
+              "athletics",
+              "deception",
+              "history",
+              "insight",
+              "intimidation",
+              "investigation",
+              "medicine",
+              "nature",
+              "perception",
+              "performance",
+              "persuasion",
+              "religion",
+              "sleight_of_hand",
+              "stealth",
+              "survival",
+              "str",
+              "dex",
+              "con",
+              "int",
+              "wis",
+              "cha",
+              null
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "context key, destination loc_ key, direction, 'back', 'self', or null"
+          },
+          "items_used": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "last_ditch": {
+            "type": "boolean"
+          },
+          "est_difficulty": {
+            "type": "string",
+            "enum": [
+              "trivial",
+              "easy",
+              "medium",
+              "hard",
+              "very_hard",
+              "near_impossible"
+            ]
+          },
+          "intent_summary": {
+            "type": "string"
+          },
+          "clarification_needed": {
+            "type": "boolean"
+          },
+          "clarification_question": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approach": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ask",
+              "persuade",
+              "deceive",
+              "intimidate",
+              "insight",
+              "small_talk",
+              "trade",
+              "farewell",
+              "gift",
+              null
+            ]
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "action_type",
+          "skill",
+          "target",
+          "items_used",
+          "last_ditch",
+          "est_difficulty",
+          "intent_summary",
+          "clarification_needed",
+          "clarification_question",
+          "approach",
+          "topic",
+          "topic_text",
+          "quantity"
+        ]
+      },
+      "description": "0-3 actions; [] only when ooc is set"
+    },
+    "ooc": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "enum": [
+                "save",
+                "load",
+                "quit",
+                "help",
+                "stats",
+                "undo",
+                "other"
+              ]
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unresolved_references": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "actions",
+    "ooc",
+    "unresolved_references"
+  ],
+  "additionalProperties": false
+}
