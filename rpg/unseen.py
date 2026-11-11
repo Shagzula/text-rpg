@@ -171,8 +171,16 @@ def identities(hidden: Dict[str, Dict]) -> list:
     return uniq
 
 
+def _word_count(label: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9]+", label or ""))
+
+
 def _replacements(hidden: Dict[str, Dict]):
-    keys, names = [], []
+    """Keys are case-insensitive. Multi-word display names/aliases are case-insensitive
+    whole-phrase matches. A single capitalized proper name (Will, Hope, Stone, Mara)
+    is case-sensitive, so ordinary lowercase English is left alone. Single-word key
+    slugs are not used as name replacements (they would over-mask 'will' / 'hope')."""
+    keys, ci_names, cs_names = [], [], []
     for key, info in hidden.items():
         if key and info.get("ref"):
             keys.append((key, info["ref"]))
@@ -183,20 +191,29 @@ def _replacements(hidden: Dict[str, Dict]):
             if a:
                 labels.add(a)
         if isinstance(key, str) and key.startswith("npc_") and len(key) > 4:
-            labels.add(key[4:].replace("_", " "))
+            slug = key[4:].replace("_", " ")
+            if slug and _word_count(slug) > 1:
+                labels.add(slug)
         for lab in labels:
-            if lab:
-                names.append((lab, UNSEEN_NAME))
+            if not lab:
+                continue
+            if _word_count(lab) > 1:
+                ci_names.append((lab, UNSEEN_NAME))
+            else:
+                cs_names.append((lab, UNSEEN_NAME))
     keys.sort(key=lambda p: len(p[0]), reverse=True)
-    names.sort(key=lambda p: len(p[0]), reverse=True)
-    return keys, names
+    ci_names.sort(key=lambda p: len(p[0]), reverse=True)
+    cs_names.sort(key=lambda p: len(p[0]), reverse=True)
+    return keys, ci_names, cs_names
 
 
-def _sub_str(s: str, keys, names) -> str:
+def _sub_str(s: str, keys, ci_names, cs_names) -> str:
     for old, new in keys:
-        s = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(old) + r"(?![A-Za-z0-9_])", new, s)
-    for old, new in names:
+        s = re.sub(r"(?i)(?<![A-Za-z0-9_])" + re.escape(old) + r"(?![A-Za-z0-9_])", new, s)
+    for old, new in ci_names:
         s = re.sub(r"(?i)(?<!\w)" + re.escape(old) + r"(?!\w)", new, s)
+    for old, new in cs_names:
+        s = re.sub(r"(?<!\w)" + re.escape(old) + r"(?!\w)", new, s)
     return s
 
 
@@ -210,7 +227,7 @@ def mask(obj: Any, hidden: Dict[str, Dict], *, preserve: Any = PRESERVE_FIELDS) 
     if not hidden:
         return obj
     keys_map = {k: v["ref"] for k, v in hidden.items()}
-    key_pairs, name_pairs = _replacements(hidden)
+    key_pairs, ci_names, cs_names = _replacements(hidden)
     preserve = set(preserve or ())
 
     def walk(o, field=None):
@@ -219,7 +236,7 @@ def mask(obj: Any, hidden: Dict[str, Dict], *, preserve: Any = PRESERVE_FIELDS) 
         if isinstance(o, dict):
             out = {}
             for k, v in o.items():
-                nk = _sub_str(k, key_pairs, name_pairs) if isinstance(k, str) else k
+                nk = _sub_str(k, key_pairs, ci_names, cs_names) if isinstance(k, str) else k
                 out[nk] = walk(v, k)
             raw_key = o.get("key")
             if raw_key in keys_map or (isinstance(out.get("key"), str) and out["key"].startswith(PREFIX)):
@@ -228,7 +245,7 @@ def mask(obj: Any, hidden: Dict[str, Dict], *, preserve: Any = PRESERVE_FIELDS) 
         if isinstance(o, list):
             return [walk(v, field) for v in o]
         if isinstance(o, str):
-            return _sub_str(o, key_pairs, name_pairs)
+            return _sub_str(o, key_pairs, ci_names, cs_names)
         return o
     return walk(obj)
 

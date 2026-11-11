@@ -171,6 +171,30 @@ def test_llm_payload_masking_is_applied_at_the_prompt_boundary(dark_guard):
     assert db.get_flag(conn, "defeated:npc_dozing_guard") is None  # this test never set it
 
 
+
+@pytest.mark.parametrize("name,key,ordinary,mention", [
+    ("Will", "npc_will", "will you help", "Will you help"),
+    ("Hope", "npc_hope", "I hope so", "Hope arrived"),
+    ("Stone", "npc_stone", "damp stone walls", "Stone walls"),
+])
+def test_for_llm_does_not_rewrite_ordinary_words_that_match_a_display_name(name, key, ordinary, mention):
+    """BUG-R8-02: whole-word, case-sensitive for a capitalized proper name that is also a common word."""
+    hidden = {key: {"ref": "npc_unseen_9", "name": name, "aliases": [], "sound": "a scrape", "alive": True}}
+    assert unseen.for_llm(ordinary, hidden) == ordinary
+    assert name not in unseen.for_llm(mention, hidden)
+    assert unseen.UNSEEN_NAME in unseen.for_llm(mention, hidden)
+    # Keys still rewrite, case-insensitively.
+    assert unseen.for_llm(f"defeated:{key.upper()}", hidden) == "defeated:npc_unseen_9"
+
+
+def test_for_llm_key_match_is_case_insensitive_for_compound_flags():
+    hidden = {"npc_dozing_guard": {"ref": "npc_unseen_2", "name": "Dozing Guard",
+                                   "aliases": [], "sound": "breathing", "alive": False}}
+    out = unseen.for_llm({"key": "defeated:NPC_DOZING_GUARD"}, hidden)
+    assert out["key"] == "defeated:npc_unseen_2"
+
+
+
 # --- Broad dark-scenario request-body guard ------------------------------------
 
 def _prepare_dark_combat(demo, two=False):
