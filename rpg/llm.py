@@ -494,15 +494,22 @@ class MockLLM:
             return f"Your {e.get('name')} gutters and goes out."
         return ""
 
-    def _describe_scene(self, context: Dict) -> str:
+    def _describe_scene(self, context: Dict, felt_line: bool = True) -> str:
         loc = context.get("location") or {}
         parts = [f"You are in the {loc.get('name', 'unknown place')}. {loc.get('description', '')}".strip()]
-        npcs = [n["name"] for n in context.get("npcs_present", []) if n.get("status") == "alive"]
-        if npcs:
-            parts.append("You see " + _join(npcs) + ".")
+        alive = [n for n in context.get("npcs_present", []) if n.get("status") == "alive"]
+        seen = [n["name"] for n in alive if n.get("visible", True)]
+        heard = [n["name"] for n in alive if not n.get("visible", True)]
+        if seen:
+            parts.append("You see " + _join(seen) + ".")
+        if heard:  # in the dark: you can hear them, not see them
+            parts.append("Close by in the dark you hear " + _join(heard) + ".")
         items = [i["name"] for i in context.get("visible_items", [])]
         if items:
             parts.append("Nearby: " + _join(items) + ".")
+        felt = [f"the {i['name']}" for i in context.get("felt_items", [])]
+        if felt and felt_line:
+            parts.append("By touch you know of " + _join(felt) + ".")
         exits = [f"{e['direction']} ({e.get('description') or e['to_name']}{', locked' if e['state'] == 'locked' else ''})"
                  for e in loc.get("exits", [])]
         if exits:
@@ -568,7 +575,8 @@ class MockLLM:
         elif at == "examine" and ok:
             target = r.get("target") or {}
             if not target or target.get("key") == (context.get("location") or {}).get("key"):
-                out.append(self._describe_scene(context).replace(f"\n\n{CLOSING_LINE}", ""))
+                out.append(self._describe_scene(context, felt_line="felt" not in r)
+                           .replace(f"\n\n{CLOSING_LINE}", ""))  # the result's own `felt` is said below
             else:
                 desc = target.get("description")
                 if desc and desc.startswith("You find it by touch"):

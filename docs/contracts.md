@@ -68,7 +68,9 @@ Principles
   that can be found and used by touch. v0.6: once a dark search of this place has succeeded (world flag
   `searched_dark:<loc>`), loose reachable items are listed too (`fixture: false`, e.g. a rope); never
   out-of-reach things. `[]` otherwise. Interpreters should match names against these before falling back to
-  inventory items.
+  inventory items. v0.6.1: `look` (examine the room) in the dark resolves with `felt` = these items, and
+  the narrator lists them alongside the darkness text and the exits; NPCs with `visible: false` are
+  described as heard, not seen.
 - `npcs_present[].conditions`: NPC condition names (e.g. `blinded`); `player_inventory[].state` shows `lit`.
 - v0.5 `npcs_present[].topics`: every public `knowledge` topic of the NPC's persona, plus `secrets` whose
   `min_band` <= the current band (`[{key, label}]`, never text). `trades`: trades listed in `reveal_by_band`

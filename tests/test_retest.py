@@ -493,3 +493,32 @@ def test_v061_citing_what_the_guard_told_you_unlocks_a_retry(demo):
     assert (p["actions"][0]["topic"], p["actions"][0]["topic_text"]) == ("the_cellar", "his post")
     r, _ = say(demo, "persuade mara about the cellar, now that I know about his post", 2)
     assert r["results"][0]["status"] == "resolved"
+
+
+# --- v0.6.1: look in the dark ----------------------------------------------------------------------
+
+def test_look_in_the_dark_lists_felt_fixtures_with_darkness_and_exits(demo):
+    go(demo, "loc_cellar")
+    r, out = say(demo, "look")
+    assert r["time_passed"] is True and [f["key"] for f in r["results"][0]["felt"]] == ["item_rusty_lever"]
+    assert "pitch dark" in out and "Ways out: up" in out and "By touch you find the Rusty lever." in out
+    assert "rope" not in out.lower()  # loose items only after a successful search
+    assert out.count("Rusty lever") == 1
+
+
+def test_look_in_the_dark_lists_loose_items_after_a_successful_search(demo):
+    go(demo, "loc_cellar")
+    r, _ = say(demo, "search the room", 20, 20)
+    assert r["results"][0]["outcome"] == "success"
+    r, out = say(demo, "look")
+    assert {f["key"] for f in r["results"][0]["felt"]} == {"item_rusty_lever", "item_rope"}
+    assert "Rusty lever" in out and "Hempen Rope" in out and "pitch dark" in out
+
+
+def test_dark_scene_says_you_hear_npcs_not_see_them(demo):
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    demo[0].execute("UPDATE location_exits SET locked = 0")
+    _, out = say(demo, "go down")
+    assert "You see" not in out and "in the dark you hear Dozing Guard" in out
+    assert "By touch you know of the Rusty lever" in out
