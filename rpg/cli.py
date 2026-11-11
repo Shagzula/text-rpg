@@ -1,6 +1,6 @@
 """Terminal turn loop.
 
-    python -m rpg [--db PATH] [--new] [--load NAME] [--seed N] [--llm mock|openai|anthropic]
+    python -m rpg [--db PATH] [--new] [--load NAME] [--seed N] [--llm mock|openai|anthropic] [--dry-run]
 
 Save design: the *working* game is one SQLite file (--db, else $RPG_DB_PATH, else
 saves/rpg_state.db). Every turn is committed to it, so quitting never loses
@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import db, llm as llm_mod
+from .providers import LLMError
 from . import talk
 from .actions import process_action_proposal
 from .context import build_context, log_narration, recent_narrations
@@ -169,7 +170,7 @@ class Game:
         for _ in range(2):  # first try + one re-prompt
             try:
                 proposal = self.llm.interpret(text, ctx, reprompt=reprompt)
-            except NotImplementedError as e:
+            except (NotImplementedError, LLMError) as e:  # no turn is spent
                 self.out(f"(LLM provider not available: {e})")
                 return None
             result = process_action_proposal(conn, self.cid, proposal, rng=self.rng)
@@ -325,9 +326,12 @@ def main(argv=None) -> int:
     ap.add_argument("--load", metavar="NAME", help="load a save slot at start")
     ap.add_argument("--seed", type=int, help="seed the dice for a deterministic run")
     ap.add_argument("--llm", help="provider: mock (default), openai, anthropic; or set $RPG_LLM")
+    ap.add_argument("--dry-run", action="store_true", default=None,
+                    help="print each provider request (key redacted) to stderr instead of sending it; "
+                         "the mock answers. Same as RPG_LLM_DRY_RUN=1")
     args = ap.parse_args(argv)
     try:
-        client = llm_mod.get_llm(args.llm)
+        client = llm_mod.get_llm(args.llm, dry_run=args.dry_run)
     except llm_mod.LLMConfigError as e:
         print(f"error: {e}")
         return 2

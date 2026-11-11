@@ -2,9 +2,8 @@
 (engine result -> prose). Stdlib only.
 
 RPG_LLM selects the provider: 'mock' (default, deterministic keyword rules),
-'openai', or 'anthropic'. Real providers read their API key from the environment
-only (OPENAI_API_KEY / ANTHROPIC_API_KEY); their network calls are not
-implemented yet.
+'openai', or 'anthropic' (rpg/providers.py). Real providers read their API key from
+the environment only (OPENAI_API_KEY / ANTHROPIC_API_KEY).
 """
 from __future__ import annotations
 
@@ -813,50 +812,27 @@ def _join(items: List[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Real providers (stubs) and factory
+# Factory (real providers live in rpg/providers.py)
 # ---------------------------------------------------------------------------
 
-class _KeyedProvider:
-    name = "base"
-    env_key = ""
-    default_model = ""
-
-    def __init__(self):
-        key = os.environ.get(self.env_key)
-        if not key:
-            raise LLMConfigError(
-                f"RPG_LLM={self.name} needs the {self.env_key} environment variable. "
-                f"Set it (export {self.env_key}=...) or use RPG_LLM=mock.")
-        self._api_key = key  # never logged or printed
-        self.model = os.environ.get("RPG_LLM_MODEL", self.default_model)
-
-    def __repr__(self):
-        return f"<{type(self).__name__} model={self.model!r}>"
-
-    def interpret(self, player_text: str, context: Dict, reprompt: Optional[str] = None) -> Dict:
-        raise NotImplementedError(f"{self.name} interpreter calls are not implemented yet (use RPG_LLM=mock)")
-
-    def narrate(self, result: Dict, context: Dict) -> str:
-        raise NotImplementedError(f"{self.name} narrator calls are not implemented yet (use RPG_LLM=mock)")
-
-    def voice_npc(self, npc_persona_view: Dict, allowed_topics: List[Dict], result: Dict, context: Dict) -> Dict:
-        raise NotImplementedError(f"{self.name} voice calls are not implemented yet (use RPG_LLM=mock)")
+PROVIDER_NAMES = ("mock", "openai", "anthropic")
+PROVIDERS = PROVIDER_NAMES  # kept for callers that list the choices
 
 
-class OpenAIClient(_KeyedProvider):
-    name, env_key, default_model = "openai", "OPENAI_API_KEY", "gpt-4o-mini"
-
-
-class AnthropicClient(_KeyedProvider):
-    name, env_key, default_model = "anthropic", "ANTHROPIC_API_KEY", "claude-3-5-haiku-latest"
-
-
-PROVIDERS = {"mock": MockLLM, "openai": OpenAIClient, "anthropic": AnthropicClient}
-
-
-def get_llm(name: Optional[str] = None) -> LLMClient:
-    """Provider from `name`, else $RPG_LLM, else 'mock'."""
+def get_llm(name: Optional[str] = None, *, dry_run: Optional[bool] = None) -> "LLMClient":
+    """Provider from `name`, else $RPG_LLM, else 'mock'. dry_run: None = $RPG_LLM_DRY_RUN."""
     choice = (name or os.environ.get("RPG_LLM") or "mock").strip().lower()
-    if choice not in PROVIDERS:
-        raise LLMConfigError(f"Unknown RPG_LLM={choice!r}; choose one of {', '.join(PROVIDERS)}")
-    return PROVIDERS[choice]()
+    if choice not in PROVIDER_NAMES:
+        raise LLMConfigError(f"Unknown RPG_LLM={choice!r}; choose one of {', '.join(PROVIDER_NAMES)}")
+    if choice == "mock":
+        return MockLLM()
+    from . import providers
+    cls = providers.OpenAIClient if choice == "openai" else providers.AnthropicClient
+    return cls(dry_run=dry_run)
+
+
+def __getattr__(name):  # llm.OpenAIClient / llm.AnthropicClient / llm.LLMError, without an import cycle
+    if name in ("OpenAIClient", "AnthropicClient", "LLMError"):
+        from . import providers
+        return getattr(providers, name)
+    raise AttributeError(name)

@@ -201,16 +201,13 @@ def test_factory_fails_clearly_without_key(monkeypatch, name, env):
 
 @pytest.mark.parametrize("name,env,cls", [("openai", "OPENAI_API_KEY", llm.OpenAIClient),
                                           ("anthropic", "ANTHROPIC_API_KEY", llm.AnthropicClient)])
-def test_provider_stub_with_key(monkeypatch, name, env, cls):
+def test_provider_with_key(monkeypatch, name, env, cls):
     monkeypatch.setenv(env, "sk-test-not-real")
     monkeypatch.setenv("RPG_LLM_MODEL", "some-model")
     client = llm.get_llm(name)
     assert isinstance(client, cls) and client.model == "some-model"
+    assert set(client.models.values()) == {"some-model"}
     assert "sk-test" not in repr(client)
-    with pytest.raises(NotImplementedError):
-        client.interpret("look", {})
-    with pytest.raises(NotImplementedError):
-        client.narrate({}, {})
 
 
 def test_factory_unknown_provider():

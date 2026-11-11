@@ -130,12 +130,6 @@ def test_voice_skipped_for_personaless_rejected_and_stub(g):
     assert rec.calls == [] and r["dialogue"] == []
 
 
-def test_provider_stubs_have_voice_npc_that_raises(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "x")
-    with pytest.raises(NotImplementedError):
-        llm_mod.OpenAIClient().voice_npc({}, [], {}, {})
-
-
 def test_dialogue_log_feeds_recent_dialogue_last_five(g):
     for _ in range(4):
         turn(g, "ask mara about the cellar")
