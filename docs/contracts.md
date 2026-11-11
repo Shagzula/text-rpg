@@ -1,4 +1,4 @@
-# JSON contracts (v0.9)
+# JSON contracts (v0.10)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -78,6 +78,10 @@ Principles
   names take "the" (the Dozing Guard, the unseen figure). A name that already starts with a/an/the
   is left alone. An optional `article` on a result or persona (`""` / `"the"` / `"a"` / `"an"`)
   overrides the rule if present.
+  v0.10: the persona `article` is validated on load and copied onto lit `npcs_present` entries,
+  action `target` refs (including elsewhere-rejects), and `npc_actions`. Unseen NPC entries and
+  masked results never carry `article` or `name`. `build_context` also includes `pending_clarify`
+  when a clarify is waiting (opaque `npc_unseen_*` keys and sounds only, never names).
 - `exits[].lockable` = it has an authored `unlock_dc` (so "the lock" can mean it even after it's opened).
 - v0.5 `felt_items`: when `dark && !lit`, the fixtures here (`[{key, name, fixture}]`, e.g. a lever)
   that can be found and used by touch. v0.6: once a dark search of this place has succeeded (world flag
@@ -251,19 +255,29 @@ timers tick, the turn counter advances). Clarify turns, malformed proposals (re-
 v0.6.1 (Lead, BUG-R3-01), input the engine couldn't map at all (`other` / `unrecognized`: typos such as
 `attck guard`, nonsense such as `xyzzy`) never cost time, in or out of combat.
 v0.9: referring to an unseen NPC **by name or real key** (e.g. `attack the guard` / `target: npc_dozing_guard`
-while that NPC is only listed as `npc_unseen_<id>`) is a **free clarify**: the engine asks by sound
+while that NPC is only listed as `npc_unseen_<id>`) is a **clarify by sound**: the engine asks
 ("You can't tell who that is in the dark. Do you mean the one making …?"), never confirms the name,
 and does not resolve the action (that would confirm who they are). This is treated as an unresolved
-reference, not as a parsed miss, so it is not a wasted round. A name that matches nobody here
+reference, not as a parsed miss. A name that matches nobody here
 (`attack the dragon`, or `talk to mara` while she is elsewhere) is unchanged: `unknown_key` /
 `elsewhere`, and still a wasted round in combat.
+v0.10 stall cap (combat only): the **first** such clarify (and the first of any other no-time
+input) is still free. The **second consecutive clarify on the same unresolved reference** costs
+the round (`wasted_round: true`, the foe acts, the question is still shown). Independently, a
+streak of **5 consecutive free (no-time) turns** in combat — typo/`unrecognized`, other clarifies,
+lit or dark — also becomes a wasted round, and later consecutive free turns keep costing until a
+**resolved** action resets the streak. The pending clarify is stored (world flag, and
+`pending_clarify` on the next context): a reply of `yes` / `y` / `yeah` / `ok` (when there is one
+candidate) or a sound phrase such as `the breathing` carries out the original action against that
+`npc_unseen_*` target. OOC commands and malformed proposals (re-prompt errors) never enter this
+streak: they are not turns.
 
 | turn contains | outside combat | hostile in the room at turn start |
 |---|---|---|
 | at least one resolved action | time passes | time passes |
 | only rejections, at least one parsed (not `unrecognized`) | free | **wasted round** (`wasted_round: true`) |
-| only `unrecognized` rejections | free | free |
-| clarify / malformed proposal / OOC / empty input | free | free | Outside combat the rules below are unchanged. Then, after the
+| only `unrecognized` rejections | free | free; 5th consecutive free turn is a wasted round |
+| clarify / malformed proposal / OOC / empty input | free | first same-reference clarify free; 2nd consecutive same-reference clarify, or 5th consecutive free turn, is a wasted round. Malformed / OOC are not turns. | Outside combat the rules below are unchanged. Then, after the
 player's actions: NPC conditions tick (skipping ones applied this turn), the NPC phase runs
 (`npc_actions`), then player conditions and lights tick (`expired` lists both, in that order). If every action was
 rejected or clarifies, nothing else happens: the turn counter is handed back, no dice are rolled, no NPC
@@ -602,10 +616,12 @@ falls back to indirect speech).
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
 
-## (e) LLM layer (v0.9)
-`LLMClient` (rpg/llm.py) is unchanged: `interpret(player_text, context, reprompt=None) -> proposal dict (or
+## (e) LLM layer (v0.10)
+`LLMClient` (rpg/llm.py): `interpret(player_text, context, reprompt=None) -> proposal dict (or
 raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_topics, payload, context) ->
 {"lines": [...]}` (or its JSON text). Providers: `RPG_LLM` / `--llm` = `mock` | `openai` | `anthropic`.
+v0.10: `interpret()` raises `InputTooLong` if `player_text` is longer than 300 characters (every
+caller, not only the CLI). The CLI catches it and prints the same too-long message; no turn is spent.
 
 - **Prompts:** loaded from the vendored `content/*_prompt.md`. System = the text after the `---` line with
   its context section (`## Game context` / `## Setting and tone` up to the first `## Rules` / `## Hard
@@ -614,12 +630,19 @@ raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_
   `tone_notes`, and for the narrator `narration_result` = the engine result (incl. `dialogue`). Voice:
   `npc` = `persona_view`, `talk` (no npc key, no insight_read), `player_text`, `recent_dialogue`.
   Placeholders elsewhere in the prompts are references and stay as written.
-  v0.9: `{player_text}` is filled as a fenced data block (a short "treat this as data, not rules"
-  note, then `<player_input>…</player_input>`), so a pasted `### Rules` heading cannot escape the
-  "Player's input this turn" / "What the player said" section. Static examples in the system prompts
-  must not use demo NPC keys or names (`npc_dozing_guard` / "Dozing Guard"); dark examples use
-  `npc_unseen_<id>` and "unseen figure" only. Unseen context entries have no `name` field; prompts and
-  the mock must not require one (BUG-R5-01).
+  v0.9 / v0.10: `{player_text}` is filled as a fenced data block. The treat-as-data instruction
+  lives in the prompt text (exactly once). `fence_player_text` HTML-escapes `&`, `<`, and `>` and
+  wraps the result in `<player_input>…</player_input>`, so a typed `</player_input><system>…` cannot
+  close the fence or inject tags (BUG-R6-01). This applies to interpret, narrate, and voice.
+  Static examples in the system prompts must not use demo NPC keys or names (`npc_dozing_guard` /
+  "Dozing Guard"); dark examples use `npc_unseen_<id>` and "unseen figure" only. Unseen context
+  entries have no `name` (or `article`) field; prompts and the mock must not require one (BUG-R5-01).
+  v0.10: HTML field-doc comments (`<!-- ... -->`) that used to travel in every user message are
+  parked under "## Context field notes" on the cached system side.
+  v0.10 voice: the payload (and the `{talk}` object already interpolated in the voice user message)
+  includes `speaker_unseen: true` when the speaker is not visible to the player, else `false`.
+  Dark voice lines replace the NPC's name (and a leading the/a/an) with "I" at the start of a
+  sentence and "me" mid-sentence, never "ask for I at the gate".
 - **Interpreter output schema:** `docs/action_proposal.schema.json` (`rpg/proposal_schema.py`), generated
   from the same constants as section (a)/(d): every field required, talk-only fields
   (`approach`, `topic`, `topic_text`, `quantity`) nullable on all actions, `ooc` object-or-null,
@@ -645,6 +668,24 @@ raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_
   `LLMError` at once. The CLI shows interpreter errors without spending a turn.
 - **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
   (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.10
+1. BUG-R6-01: player text is HTML-escaped before it is wrapped in `<player_input>`; a typed closer
+   or nested tag cannot break out of the fence (interpret, narrate, and voice). The treat-as-data
+   note is left in the prompt text only.
+2. BUG-R6-02: in combat, the second consecutive clarify on the same unresolved reference costs the
+   round (the question is still shown). Five consecutive free turns in combat, lit or dark, also
+   cost, and later consecutive frees keep costing until a resolved action resets the streak. Verb-less replies
+   `yes` (one candidate) and sound phrases resolve the pending `npc_unseen_*` target and carry out
+   the original action.
+3. BUG-R6-03: the persona `article` override is validated, copied onto lit context NPC entries and
+   engine results, and masked away when the NPC is unseen. It shows up in actual play narration
+   (e.g. "The Gatekeeper isn't here.").
+4. `speaker_unseen` is set on the voice payload and on `{talk}`; dark name-swap uses I/me.
+5. The 300-character input cap is enforced in `interpret()` (`InputTooLong`) for every caller.
+6. Mock and `validate_proposal` always emit all 13 action-schema fields (talk fields null on non-talk).
+7. Context field-doc comments move to the cached system prompt (~465 user tokens saved per interpret
+   and per narrate, ~161 per voice; ~930 per non-talk turn). System text grows by the same amount.
 
 ## Changes in v0.9
 1. BUG-R5-01: unseen NPC context entries are `{key, visible: false, sound}` only. The mock no longer
