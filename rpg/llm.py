@@ -437,6 +437,8 @@ class MockLLM:
             if r["outcome"] == "clarify":
                 continue
             lines.append(self._narrate_one(r, context))
+        if result.get("wasted_round"):
+            lines.append("You lose precious moments, and your foe doesn't wait.")
         lines += [self._npc_action_text(a) for a in result.get("npc_actions", [])]
         lines += [self._expired_text(e) for e in result.get("expired", [])]
         if result.get("defeat"):

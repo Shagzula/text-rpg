@@ -405,7 +405,7 @@ def test_attack_miss_angers_target(world):
               rng=Script(2, 1))["results"]  # miss; the angered guard's counterattack misses
     assert a["outcome"] == "failure" and a["consequences"] == [
         {"type": "npc_disposition_changed", "key": "npc_tall_guard", "to": "hostile"}]
-    [r] = run(world, act("rest"))["results"]
+    [r] = run(world, act("rest"), rng=Script(1))["results"]  # v0.6: a wasted round, the guard swings (misses)
     assert (r["reason"], r["detail"]) == ("impossible_action", "enemies_present")
 
 

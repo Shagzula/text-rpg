@@ -110,7 +110,7 @@ def test_mock_narration_is_second_person_without_numbers(game):
     conn, cid = game
     import random
     m = MockLLM()
-    for text in ("look", "take crowbar", "go east", "desperately kick the door", "attack guard", "i", "rest"):
+    for text in ("look", "take crowbar", "rest", "go east", "desperately kick the door", "i", "attack guard"):
         p = m.interpret(text, build_context(conn, cid))
         r = actions.process_action_proposal(conn, cid, p, rng=random.Random(5))
         out = llm.narrate_safely(m, r, build_context(conn, cid))

@@ -66,16 +66,23 @@ def test_bug02_unknown_text_is_rejected_without_spending_a_turn(tmp_path, text):
     g, out = play(tmp_path, text, "/quit")
     joined = "\n".join(out)
     assert "manage it" not in joined and "Nothing happens" in joined
-    assert turn_no(g.path) == 0
-    assert g.rng.random() == random.Random(3).random()  # no dice were rolled
+    # v0.6 (Lead): with a hostile here, an unmodellable action is a wasted round: time passes, it swings
+    assert turn_no(g.path) == 1 and "You lose precious moments" in joined
     with db.connect(g.path) as conn:
-        ch = conn.execute("SELECT str_score, current_hp, max_hp FROM characters WHERE is_player = 1").fetchone()
-        assert ch["str_score"] == 8 and ch["current_hp"] == ch["max_hp"]  # no counterattack
+        ch = conn.execute("SELECT str_score FROM characters WHERE is_player = 1").fetchone()
+        assert ch["str_score"] == 8  # nothing the text asked for happened
         assert conn.execute("SELECT COUNT(*) FROM location_exits WHERE locked = 1").fetchone()[0] == 2
 
 
+@pytest.mark.parametrize("text", ["cast fireball", "xyzzy", "'; DROP TABLE characters;--"])
+def test_bug02_unknown_text_out_of_combat_is_still_free(tmp_path, text):
+    g, _ = play(tmp_path, "/quit", new=True)
+    g, out = play(tmp_path, text, "/quit")
+    assert "Nothing happens" in "\n".join(out) and turn_no(g.path) == 0
+    assert g.rng.random() == random.Random(3).random()  # no dice were rolled
+
+
 def test_bug02_engine_rejects_other_without_skill_and_does_not_roll(world):
-    world["conn"].execute("UPDATE npcs SET disposition = -90 WHERE key = 'npc_tall_guard'")
     r = run(world, act("other", intent="Cast fireball."))  # Script() with no values: any roll would fail
     [x] = r["results"]
     assert (x["status"], x["reason"], x["detail"]) == ("rejected", "impossible_action", "unrecognized")

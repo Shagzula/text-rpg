@@ -859,6 +859,7 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 "time_passed": False}
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     npc_mark = effects.npc_condition_mark(conn)
+    in_combat = effects.hostiles_here(conn, character_id)  # at the start of the turn
     actions = prop["actions"]
     results: List[Dict] = []
     skipped: List[Dict] = []
@@ -898,6 +899,9 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     # Time passes (NPCs act, timers tick) only if some action actually resolved; turns that
     # were all rejected or clarification requests cost nothing.
     time_passed = any(r["status"] == "resolved" for r in results)
+    # v0.6 (Lead decision): in combat, a rejected action is a wasted round; hostiles still act.
+    wasted_round = not time_passed and bool(in_combat) and any(r["status"] == "rejected" for r in results)
+    time_passed = time_passed or wasted_round
     if time_passed:
         expired = effects.tick_npc_conditions(conn, npc_mark)
         npc_actions = effects.npc_phase(conn, character_id, rng, turn.turn)
@@ -912,6 +916,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
            "time_passed": time_passed}
     if skipped:
         out["skipped"] = skipped
+    if wasted_round:
+        out["wasted_round"] = True
     return out
 
 

@@ -250,6 +250,14 @@ def tick(conn, character_id) -> List[Dict]:
 # NPC phase
 # ---------------------------------------------------------------------------
 
+def hostiles_here(conn, character_id) -> List[str]:
+    """Keys of living hostile NPCs in the player's location (combat, for wasted rounds)."""
+    return [n["key"] for n in conn.execute(
+        "SELECT n.key, n.disposition FROM npcs n JOIN characters c ON c.location_id = n.location_id "
+        "WHERE c.id = ? AND n.alive = 1 ORDER BY n.id", (character_id,))
+        if rules.disposition_band(n["disposition"]) == "hostile"]
+
+
 def player_defense(conn, character_id) -> int:
     ch = conn.execute("SELECT dex_score FROM characters WHERE id = ?", (character_id,)).fetchone()
     return rules.armor_defense(ch["dex_score"], inv.equipped_items(conn, character_id))

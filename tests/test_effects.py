@@ -74,9 +74,33 @@ def test_moving_away_escapes_the_attack(world):
 
 
 def test_rejected_or_clarify_only_turn_passes_no_time(world):
+    r = run(world, act("other", intent="Dance."))  # no hostile here: a rejection is free
+    assert r["results"][0]["detail"] == "unrecognized" and r["npc_actions"] == [] and r["expired"] == []
+    assert r["time_passed"] is False
+
+
+def test_rejected_turn_in_combat_is_a_wasted_round(world):
     hostile(world)
-    r = run(world, act("rest"))  # blocked: enemies present
-    assert r["results"][0]["detail"] == "enemies_present" and r["npc_actions"] == [] and r["expired"] == []
+    r = run(world, act("rest"), rng=Script(1))  # blocked: enemies present -> the guard still swings
+    assert r["results"][0]["detail"] == "enemies_present"
+    assert r["time_passed"] is True and r["wasted_round"] is True and r["npc_actions"][0]["action"] == "attack"
+
+
+def test_malformed_and_ooc_in_combat_never_cost_time(world):
+    from rpg.actions import process_action_proposal as process
+    hostile(world)
+    conn, cid = world["conn"], world["cid"]
+    assert process(conn, cid, "not json", rng=Script())["error"] == "invalid_proposal"
+    assert process(conn, cid, {"actions": [], "ooc": {"command": "stats", "text": "/stats"},
+                               "unresolved_references": []}, rng=Script())["type"] == "ooc"
+    assert run(world, act("wait"), rng=Script(1))["turn"] == 1  # nothing above spent a turn
+
+
+def test_clarify_in_combat_stays_free(world):
+    hostile(world)
+    a = act("attack", clarification_needed=True, clarification_question="Which one?")
+    r = run(world, a)
+    assert r["time_passed"] is False and "wasted_round" not in r
 
 
 def test_player_defense_from_armor_and_shield(world):
