@@ -1,4 +1,4 @@
-# JSON contracts (v0.6.1)
+# JSON contracts (v0.7)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -320,6 +320,17 @@ State change types: `moved_to_location`, `exit_state`, `item_added`, `item_remov
 | `item_light_source` | `effect: light`, `duration` | Lit/unlit toggle; 1 hour = 60 turns of burn time. Lights a dark location while held or lying there. |
 | `item_rations` | `effect: sustenance` | Eaten on `rest` for a full heal (see `rest`). Eating outside a rest just spends it. |
 | `item_lockpicks`, `item_crowbar`, `item_healers_kit` | `enables`, `skill_bonus` | See Tools. `grants: required_for_check` (lockpicks) adds no bonus; the requirement is enforced through `enables: pick_lock`. |
+| `item_rope` (v0.7) | `subcategory: climbing` (tag `climbing`); `use_note` "enables climbing/descending; advantage on athletics climb checks when anchored" | Any template with `stats.subcategory: climbing` gets the default stats `enables: [climb]`, `skill_bonus: {skill: athletics, grants: advantage}` (`inventory.SUBCATEGORY_DEFAULTS`; keys the template sets itself win). A `move` with `skill: athletics` is method `climb`: a held rope gives advantage automatically (`tool_used`). Any other athletics check gets it only when the rope is in `items_used` ("anchored"). No advantage for forcing doors etc. Without a rope a climb is a plain check (the slice has no climb-only exits yet). |
+| `item_signal_whistle` (v0.7) | `subcategory: signal`; `use_note` "loud noise audible ~600 ft; can distract or summon"; `uses: null` (unlimited) | `use_item` (held, else `item_not_owned` / `not_held`) resolves with consequence `noise_made {key, name, heard_by: [npc keys]}`: every living NPC here or one exit away. Each living, hostile, non-incapacitated NPC **here** that no noise has distracted before (world flag `noise_distracted:<npc>`, once per NPC per game) gets condition `distracted` (1 turn, effect `{attack_disadvantage: true}`; consequence `npc_condition {key, npc_name, name: "distracted", outcome: "applied"}`): its attack this turn rolls 2d20 and keeps the lower. "Summon" isn't modelled. The tag `noisy` alone (crowbar, armor) is not a whistle. |
+
+### Equipment perks (v0.7; head / hands / feet house rules)
+The YAML gives these perks as `use_note` prose; the engine's defaults (`effects.EQUIP_PERKS`, by template) apply
+unless a template sets `stats.perk` (same shape), which wins. Perks work only while the item is **equipped**.
+| item (slot) | perk shape | behaviour |
+|---|---|---|
+| `item_leather_cap` (head) | `{negate_conditions: [stunned, dazed], per: rest}` | The first `stunned` or `dazed` condition that would land on the player is negated (not stored); the result's `condition` consequence stays with `negated_by: {key, name}`. Spent until the next successful `rest` (world flag `perk_used:<item>`). Every player condition goes through `effects.add_player_condition` (check consequences, buffs). Nothing in the slice applies `stunned`/`dazed` to the player yet. |
+| `item_work_gloves` (hands) | `{advantage_tags: [climbing, sharp, hot, rough], advantage_methods: [climb]}` | Advantage on a check whose method is `climb`, or where an item in `items_used` has one of the tags (e.g. the rope). Reported as consequence `perk_used {key, name}`. Doesn't stack with a tool's advantage. |
+| `item_travel_boots` (feet) | none | The YAML gives no perk ("mostly flavor"); still an improvised thrown weapon. |
 
 ### Pursuit (v0.6, **DECIDED**)
 On a turn that spent time, if the player ended in a different room from where they started, every NPC in
@@ -556,6 +567,15 @@ falls back to indirect speech).
 9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
+
+## Changes in v0.7
+1. Rope: `subcategory: climbing` items are climbing tools; athletics `move` = method `climb`.
+2. Equipment perks: leather cap (one daze/stun per rest), work gloves (climb / rough-item advantage);
+   boots none. New consequences `perk_used {key, name}` and `condition.negated_by`.
+3. Whistle: `subcategory: signal` items make `noise_made`; a hostile here is `distracted` once (attack at
+   disadvantage). NPC conditions may carry `attack_disadvantage`.
+4. Mock: "blow" maps to `use_item`.
+No schema change (still v4).
 
 ## Changes in v0.6.1
 1. BUG-R3-01 (Lead): `unrecognized` input never wastes a round, even in combat; only parsed-but-rejected

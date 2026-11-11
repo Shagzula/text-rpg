@@ -61,6 +61,10 @@ changed attitude, or a new item), and talking or trading someone up stops at fri
 mara`) or a story event takes them further. `trade` alone lists the deals;
 `buy 3 torches` trades a repeatable deal up to 10 times.
 
+Gear (contracts v0.7): a rope helps you climb (athletics moves, or when you use it); worn work gloves help
+with climbing and rough or sharp things; a worn leather cap shrugs off one daze or stun per rest; blowing a
+signal whistle is heard next door and throws a hostile off its next swing (once per foe).
+
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
 12 HP, +3, 1d6) is a real fight for the 10-HP premade (defense 12). Rest heals half your missing HP, or
