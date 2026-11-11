@@ -602,7 +602,27 @@ class MockLLM:
         if phrase in AFFIRMATIONS or words <= (PRONOUNS | {"yes"}):
             if len(cands) == 1:
                 return finish(cands[0]["key"])
-            return None
+            # Several candidates: re-ask by sound, never treat as a typo (BUG-R7-02).
+            sounds = [c.get("sound") or "something nearby" for c in cands]
+            question = pending.get("question") or (
+                "Who do you mean: " + ", ".join(f"the one making {s}" for s in sounds[:-1])
+                + " or the one making " + sounds[-1] + "?")
+            action = {
+                "action_type": pending.get("action_type") or "attack",
+                "skill": pending.get("skill"),
+                "target": None,
+                "items_used": list(pending.get("items_used") or []),
+                "last_ditch": bool(pending.get("last_ditch")),
+                "est_difficulty": pending.get("est_difficulty") or "medium",
+                "intent_summary": pending.get("intent_summary") or "Follow through.",
+                "clarification_needed": True,
+                "clarification_question": question,
+            }
+            if action["action_type"] == "talk":
+                action["approach"] = pending.get("approach") or "ask"
+                action["skill"] = action["skill"] or "persuasion"
+            _fill_action_fields(action)
+            return {"actions": [action], "ooc": None, "unresolved_references": [phrase or "yes"]}
         scored = []
         for c in cands:
             sound_words = set(re.findall(r"[a-z0-9]+", (c.get("sound") or "").lower())) - stop - {"of", "and", "something", "nearby"}

@@ -808,7 +808,10 @@ class Turn:
                 cons.append({"type": "damage_dealt", "target": t.key, "hp_band": rules.hp_band(hp, t.row["max_hp"])})
                 if hp <= 0:
                     self.conn.execute("UPDATE npcs SET alive = 0 WHERE id = ?", (t.row["id"],))
-                    changes.append({"type": "npc_defeated", "key": t.key, "name": t.name})
+                    defeated = {"type": "npc_defeated", "key": t.key, "name": t.name}
+                    if t.row.get("article") is not None:
+                        defeated["article"] = t.row["article"]
+                    changes.append(defeated)
                     db.set_flag(self.conn, f"defeated:{t.key}", True)
                     changes.append({"type": "flag_set", "key": f"defeated:{t.key}", "value": True})
             if not changes and rules.disposition_band(t.row["disposition"]) != "hostile":
@@ -897,7 +900,22 @@ def _sig_text(value) -> str:
     return " ".join(str(value).lower().replace("_", " ").split())
 
 
-def _clarify_signature(kind: str, action: dict, raw_target=None) -> str:
+AFFIRM_REPLIES = frozenset({"yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "do it",
+                            "it", "them", "him", "her", "that"})
+
+
+def _candidate_keys(candidates) -> str:
+    keys = sorted({(c.get("key") if isinstance(c, dict) else str(c))
+                   for c in (candidates or []) if c})
+    return ",".join(keys)
+
+
+def _clarify_signature(kind: str, action: dict, raw_target=None, candidates=None) -> str:
+    """Same-reference identity is the action type plus the resolved candidate set,
+    not the player's wording ('the guard' vs 'the dozing guard')."""
+    cand = _candidate_keys(candidates)
+    if cand:
+        return "|".join(("ref", str(action.get("action_type") or ""), cand))
     return "|".join((
         kind,
         str(action.get("action_type") or ""),
@@ -906,12 +924,20 @@ def _clarify_signature(kind: str, action: dict, raw_target=None) -> str:
     ))
 
 
-def _pending_candidates(hidden: dict) -> list:
-    return [{"key": info["ref"], "sound": info["sound"]}
-            for info in hidden.values() if info.get("alive")]
+def _pending_candidates(conn, character_id: int, hidden: dict) -> list:
+    living_hidden = [{"key": info["ref"], "sound": info["sound"]}
+                     for info in hidden.values() if info.get("alive")]
+    if living_hidden:
+        return living_hidden
+    loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()
+    if not loc or loc[0] is None:
+        return []
+    return [{"key": n["key"]} for n in conn.execute(
+        "SELECT key FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id", (loc[0],))]
 
 
-def _store_pending(conn, character_id: int, action: dict, question: str, hidden: dict, signature: str) -> None:
+def _store_pending(conn, character_id: int, action: dict, question: str, hidden: dict,
+                   signature: str, reasks: int = 0) -> None:
     db.set_flag(conn, PENDING_FLAG + str(character_id), {
         "action_type": action.get("action_type"),
         "skill": action.get("skill"),
@@ -920,8 +946,17 @@ def _store_pending(conn, character_id: int, action: dict, question: str, hidden:
         "last_ditch": bool(action.get("last_ditch")),
         "question": question,
         "signature": signature,
-        "candidates": _pending_candidates(hidden),
+        "candidates": _pending_candidates(conn, character_id, hidden),
+        "reasks": int(reasks or 0),
     })
+
+
+def _affirmation_reask(prop: dict, pending) -> bool:
+    """True when the player answered a multi-candidate pending clarify with yes/ok/etc."""
+    if not pending or len(pending.get("candidates") or []) < 2:
+        return False
+    refs = [_sig_text(r) for r in (prop.get("unresolved_references") or [])]
+    return bool(refs) and all(r in AFFIRM_REPLIES for r in refs)
 
 
 def _clear_flag(conn, key: str) -> None:
@@ -1007,14 +1042,19 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     results: List[Dict] = []
     skipped: List[Dict] = []
     question = None
+    candidates = _pending_candidates(conn, character_id, hidden)
+    prior_pending = db.get_flag(conn, PENDING_FLAG + str(character_id))
 
     if prop["unresolved_references"]:
         flagged = next((a for a in actions if a["clarification_needed"]), actions[0] if actions else None)
         question = (flagged or {}).get("clarification_question") or _generic_question(prop["unresolved_references"])
+        if _affirmation_reask(prop, prior_pending) and prior_pending.get("question"):
+            question = prior_pending["question"]  # re-ask the same sound question
         results.append(turn.clarify(flagged))
         skipped = [_skip(a, "prior_clarify") for a in actions if a is not flagged]
         clarify_action = flagged or {"action_type": None}
-        clarify_signature = _clarify_signature("unresolved", clarify_action, prop["unresolved_references"])
+        clarify_signature = _clarify_signature("unresolved", clarify_action,
+                                               prop["unresolved_references"], candidates)
     else:
         failed: List[Dict] = []
         for i, a in enumerate(actions):
@@ -1028,19 +1068,19 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 verb = "talk to" if a["action_type"] == "talk" else "attack"
                 question = turn.unseen_name_question(verb)
                 results.append(turn.clarify(a))
-                clarify_action, clarify_signature = a, _clarify_signature("named", a, raw_targets[i])
+                clarify_action, clarify_signature = a, _clarify_signature("named", a, raw_targets[i], candidates)
                 continue
             if a["clarification_needed"]:
                 question = a["clarification_question"] or _generic_question([a["intent_summary"]])
                 results.append(turn.clarify(a))
-                clarify_action, clarify_signature = a, _clarify_signature("needed", a, raw_targets[i])
+                clarify_action, clarify_signature = a, _clarify_signature("needed", a, raw_targets[i], candidates)
                 continue
             if a["action_type"] in ("talk", "attack") and a["target"] is None:
                 a, ask = turn.default_npc_target(a, "talk to" if a["action_type"] == "talk" else "attack")
                 if ask:
                     question = ask
                     results.append(turn.clarify(a))
-                    clarify_action, clarify_signature = a, _clarify_signature("who", a, raw_targets[i])
+                    clarify_action, clarify_signature = a, _clarify_signature("who", a, raw_targets[i], candidates)
                     continue
             r = turn.resolve(a)
             results.append(r)
@@ -1058,11 +1098,20 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     # all (`unrecognized`: typos, nonsense) is free even in combat, like malformed input.
     wasted_round = not time_passed and bool(in_combat) and any(
         r["status"] == "rejected" and r.get("detail") not in FREE_REJECTIONS for r in results)
+    is_reask = bool(question) and _affirmation_reask(prop, prior_pending)
+    reasks = (int(prior_pending.get("reasks") or 0) + 1) if is_reask else 0
     if question and clarify_action is not None:
-        _store_pending(conn, character_id, clarify_action, question, hidden, clarify_signature or "")
+        _store_pending(conn, character_id, clarify_action, question, hidden,
+                       clarify_signature or "", reasks=reasks)
     if resolved or (wasted_round and not question):
         # a real resolved action (or a parsed rejection that already costs the round) resets the stall
         _reset_stall(conn, character_id)
+    elif is_reask:
+        # First 'yes' with several candidates re-asks for free and does not consume a stall
+        # slot (streak unchanged). A second consecutive yes on the same pending clarify
+        # costs the round, so it cannot be used to stall forever.
+        if in_combat and reasks >= 2:
+            wasted_round = True
     elif not time_passed and not wasted_round:
         # typo / clarify / other free input: maybe cap the stall in combat
         if _maybe_cap_free_turn(conn, character_id, in_combat, question, clarify_signature or "free"):
