@@ -452,6 +452,8 @@ class MockLLM:
 
     def _npc_action_text(self, a: Dict) -> str:
         name = a.get("name") or "foe"
+        if a.get("action") == "follow":
+            return f"The {name} comes after you!"
         if a.get("action") == "none":
             return f"The {name} flails about, {a.get('reason') or 'helpless'}, and can't find you."
         if a.get("outcome") == "success":
@@ -498,6 +500,7 @@ class MockLLM:
         "fixture": "It's fixed in place; it won't come loose.",
         "already_held": "You already have it.",
         "enemies_present": "Not with enemies this close.",
+        "hostile_nearby": "Not with an enemy just next door; you'd never get a moment's peace.",
         "target_defeated": "There's no fight left in them.",
         "lacks_ability": "You have no such power.",
         "unrecognized": "Nothing happens. That isn't something you can do here.",

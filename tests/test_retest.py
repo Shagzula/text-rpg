@@ -386,3 +386,44 @@ def test_r2_05_rope_only_by_touch_after_a_search(demo):
     say(demo, "search", 20, 18)
     r, _ = say(demo, "examine rope")
     assert r["results"][0]["status"] == "resolved"
+
+
+# --- Lead decisions v0.6 (5:52 PM): wasted rounds, rest near hostiles, pursuit ----------------------
+
+def hostile_guard(demo):
+    demo[0].execute("UPDATE npcs SET disposition = -80 WHERE key = 'npc_dozing_guard'")
+
+
+def test_lead_flee_rest_and_pursuit_on_the_demo_slice(demo):
+    conn = demo[0]
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    r, out = say(demo, "go west")
+    assert [a["action"] for a in r["npc_actions"]] == ["follow"] and "comes after you" in out
+    r, out = say(demo, "rest", 1)  # it's right here now: blocked, and in combat that's a wasted round
+    assert r["results"][0]["detail"] == "enemies_present" and r["wasted_round"] and "attacks" in out
+    r, out = say(demo, "go east", 1)  # flee again: no second pursuit
+    assert r["npc_actions"] == [] and "comes after you" not in out
+    r, out = say(demo, "rest")  # but it's next door
+    assert r["results"][0]["detail"] == "hostile_nearby" and r["time_passed"] is False
+    assert "next door" in out
+    guard_loc = conn.execute("SELECT l.key FROM npcs n JOIN locations l ON l.id = n.location_id "
+                             "WHERE n.key = 'npc_dozing_guard'").fetchone()[0]
+    assert guard_loc == "loc_town_square"
+
+
+def test_lead_pursuit_into_the_dark_cellar(demo):
+    conn = demo[0]
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    conn.execute("UPDATE location_exits SET locked = 0")
+    r, out = say(demo, "go down")
+    assert [a["action"] for a in r["npc_actions"]] == ["follow"] and "comes after you" in out
+    r, _ = say(demo, "wait", 1)
+    assert [a["action"] for a in r["npc_actions"]] == ["attack"]
+
+
+def test_lead_guard_stats_unchanged(demo):
+    g = demo[0].execute("SELECT defense_dc, max_hp, attack_bonus, damage, save_bonus FROM npcs "
+                        "WHERE key = 'npc_dozing_guard'").fetchone()
+    assert tuple(g) == (11, 12, 3, "1d6", 1)

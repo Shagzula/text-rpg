@@ -524,9 +524,9 @@ class Turn:
     def do_rest(self, a, t):
         """Rest heals half the missing HP (rounded up) and clears non-lasting conditions.
         Eating a ration while resting (one is consumed if held) heals to full instead."""
-        for n in self.conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1", (self.loc_id,)):
-            if rules.disposition_band(n["disposition"]) == "hostile":
-                raise Reject("impossible_action", "enemies_present")
+        danger = effects.hostile_nearby(self.conn, self.loc_id)  # v0.6: no resting next to a hostile either
+        if danger:
+            raise Reject("impossible_action", danger)
         ch = self.char_row
         cons = []
         ration = next((i for i in inv.list_inventory(self.conn, self.cid)
@@ -860,6 +860,7 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     npc_mark = effects.npc_condition_mark(conn)
     in_combat = effects.hostiles_here(conn, character_id)  # at the start of the turn
+    start_loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()[0]
     actions = prop["actions"]
     results: List[Dict] = []
     skipped: List[Dict] = []
@@ -904,7 +905,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     time_passed = time_passed or wasted_round
     if time_passed:
         expired = effects.tick_npc_conditions(conn, npc_mark)
-        npc_actions = effects.npc_phase(conn, character_id, rng, turn.turn)
+        npc_actions = effects.pursuit(conn, character_id, start_loc)
+        npc_actions += effects.npc_phase(conn, character_id, rng, turn.turn, skip={f["npc"] for f in npc_actions})
         expired += effects.tick(conn, character_id)
     else:
         _undo_turn(conn, character_id)

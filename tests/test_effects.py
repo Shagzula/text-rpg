@@ -67,10 +67,58 @@ def test_attacking_neutral_npc_provokes_counterattack_same_turn(world):
     assert hp(world) == 8
 
 
-def test_moving_away_escapes_the_attack(world):
+def npc_loc(w, key):
+    return w["conn"].execute("SELECT location_id FROM npcs WHERE key = ?", (key,)).fetchone()[0]
+
+
+def test_fleeing_hostile_follows_once_without_attacking(world):
     hostile(world)
+    r = run(world, act("move", target="loc_back_hall"))  # Script(): any attack roll would fail the test
+    assert r["npc_actions"] == [{"npc": "npc_tall_guard", "name": "Tall Guard", "action": "follow",
+                                 "outcome": None, "degree": None, "hp_band": "unhurt"}]
+    assert npc_loc(world, "npc_tall_guard") == world["hall"]
+    assert db.get_flag(world["conn"], "pursued:npc_tall_guard") is True
+    r = run(world, act("wait"), rng=Script(1))  # next turn it fights in the new room
+    assert [a["action"] for a in r["npc_actions"]] == ["attack"]
+    r = run(world, act("move", target="loc_storeroom"))  # it only pursues once, then stays put
+    assert r["npc_actions"] == [] and npc_loc(world, "npc_tall_guard") == world["hall"]
+
+
+def test_unreachable_or_incapacitated_hostiles_do_not_follow(world):
+    conn = world["conn"]
+    hostile(world)
+    hostile(world, "npc_archer")  # out of reach on the ledge
+    nid = conn.execute("SELECT id FROM npcs WHERE key = 'npc_tall_guard'").fetchone()[0]
+    conn.execute("INSERT INTO npc_conditions (npc_id, name, duration_turns) VALUES (?, 'blinded', 3)", (nid,))
     r = run(world, act("move", target="loc_back_hall"))
-    assert r["npc_actions"] == []
+    assert r["npc_actions"] == [] and npc_loc(world, "npc_tall_guard") == world["store"]
+
+
+def test_pursuit_works_in_the_dark(world):
+    conn = world["conn"]
+    hostile(world)
+    conn.execute("UPDATE locations SET dark = 1 WHERE key = 'loc_cellar'")
+    conn.execute("UPDATE location_exits SET locked = 0")
+    r = run(world, act("move", target="loc_cellar"))
+    assert [a["action"] for a in r["npc_actions"]] == ["follow"] and npc_loc(world, "npc_tall_guard") == world["cellar"]
+    r = run(world, act("wait"), rng=Script(1))
+    assert [a["action"] for a in r["npc_actions"]] == ["attack"]
+
+
+def test_no_rest_with_a_hostile_in_an_adjacent_room(world):
+    conn = world["conn"]
+    hostile(world)
+    conn.execute("UPDATE characters SET location_id = ? WHERE id = ?", (world["hall"], world["cid"]))
+    r = run(world, act("rest"))
+    assert (r["results"][0]["reason"], r["results"][0]["detail"]) == ("impossible_action", "hostile_nearby")
+    assert r["time_passed"] is False and r["npc_actions"] == []  # not in the room: not a wasted round
+    conn.execute("UPDATE characters SET location_id = ? WHERE id = ?", (world["far"], world["cid"]))
+    assert run(world, act("rest"))["results"][0]["status"] == "resolved"  # no connected room holds a hostile
+
+
+def test_rest_allowed_when_the_neighbour_is_not_hostile(world):
+    world["conn"].execute("UPDATE characters SET location_id = ? WHERE id = ?", (world["hall"], world["cid"]))
+    assert run(world, act("rest"))["results"][0]["status"] == "resolved"
 
 
 def test_rejected_or_clarify_only_turn_passes_no_time(world):

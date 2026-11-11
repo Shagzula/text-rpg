@@ -11,6 +11,7 @@ import json
 import random
 from typing import Dict, List, Optional
 
+from . import db
 from . import inventory as inv
 from . import rules
 
@@ -263,7 +264,46 @@ def player_defense(conn, character_id) -> int:
     return rules.armor_defense(ch["dex_score"], inv.equipped_items(conn, character_id))
 
 
-def npc_phase(conn, character_id, rng: random.Random, turn: int) -> List[Dict]:
+PURSUED_FLAG = "pursued:"
+
+
+def pursuit(conn, character_id, from_location_id) -> List[Dict]:
+    """v0.6 (Lead): when the player leaves a room with a living, hostile, reachable NPC that can
+    act, it follows once into the player's new room (flag pursued:<npc>) and then stays there.
+    Following is that NPC's action for the turn. Works in the dark (sight isn't needed)."""
+    ch = conn.execute("SELECT * FROM characters WHERE id = ?", (character_id,)).fetchone()
+    if ch["current_hp"] <= 0 or from_location_id is None or ch["location_id"] == from_location_id:
+        return []
+    out = []
+    for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 AND out_of_reach = 0 ORDER BY id",
+                          (from_location_id,)).fetchall():
+        if rules.disposition_band(n["disposition"]) != "hostile" or npc_incapacitated(conn, n["id"]):
+            continue
+        if db.get_flag(conn, PURSUED_FLAG + n["key"]):
+            continue
+        conn.execute("UPDATE npcs SET location_id = ? WHERE id = ?", (ch["location_id"], n["id"]))
+        db.set_flag(conn, PURSUED_FLAG + n["key"], True)
+        out.append({"npc": n["key"], "name": n["name"], "action": "follow", "outcome": None, "degree": None,
+                    "hp_band": rules.hp_band(ch["current_hp"], ch["max_hp"])})
+    return out
+
+
+def hostile_nearby(conn, location_id) -> Optional[str]:
+    """'enemies_present' (same room) or 'hostile_nearby' (a room one exit away) if a living
+    hostile NPC is there, else None. Used to block resting."""
+    def hostile_in(lid):
+        return any(rules.disposition_band(n["disposition"]) == "hostile" for n in conn.execute(
+            "SELECT disposition FROM npcs WHERE location_id = ? AND alive = 1", (lid,)))
+    if hostile_in(location_id):
+        return "enemies_present"
+    for e in conn.execute("SELECT DISTINCT to_location_id FROM location_exits WHERE from_location_id = ?",
+                          (location_id,)).fetchall():
+        if hostile_in(e[0]):
+            return "hostile_nearby"
+    return None
+
+
+def npc_phase(conn, character_id, rng: random.Random, turn: int, skip=()) -> List[Dict]:
     """Every hostile, alive, reachable NPC in the player's location attacks once:
     d20 + attack_bonus vs the player's defense; a hit deals its damage dice (min 1).
     Incapacitated (e.g. blinded) NPCs lose their attack. Stops once the player is down."""
@@ -275,7 +315,7 @@ def npc_phase(conn, character_id, rng: random.Random, turn: int) -> List[Dict]:
     hp = ch["current_hp"]
     for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 AND out_of_reach = 0 ORDER BY id",
                           (ch["location_id"],)).fetchall():
-        if rules.disposition_band(n["disposition"]) != "hostile":
+        if rules.disposition_band(n["disposition"]) != "hostile" or n["key"] in skip:
             continue
         entry = {"npc": n["key"], "name": n["name"]}
         blocked = npc_incapacitated(conn, n["id"])
