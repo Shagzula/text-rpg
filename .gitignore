@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 saves/
 *.db
+.env
+.env.*
+*.sqlite
+*.sqlite3
