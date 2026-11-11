@@ -148,4 +148,4 @@ def build_context(conn, character_id: int) -> Dict:
     pending = db.get_flag(conn, f"pending_clarify:{character_id}")
     if pending:
         out["pending_clarify"] = pending  # opaque keys + sounds only; no names
-    return out
+    return unseen.carry(out, unseen.unseen_npcs(conn, character_id))

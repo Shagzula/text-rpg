@@ -527,10 +527,21 @@ def voice(conn, llm, result: Dict, player_text: str, context: Optional[Dict] = N
         talk["speaker_unseen"] = bool(dark)
         payload = {"player_text": player_text, "talk": talk, "recent_dialogue": recent_dialogue(conn, npc["id"]),
                    "speaker_unseen": bool(dark)}
+        # Carry the room's unseen map so voice_messages can mask persona_view and
+        # the payload at the LLM boundary (real key/name must not reach the model).
+        hidden = unseen.hidden_of(context)
+        if not hidden and npc is not None:
+            here = conn.execute("SELECT id FROM characters WHERE location_id = ?", (npc["location_id"],)).fetchone()
+            if here:
+                hidden = unseen.unseen_npcs(conn, here["id"])
+        view = personas.persona_view(p)
+        if hidden:
+            view = unseen.carry(view, hidden)
+            payload = unseen.carry(payload, hidden)
         lines = None
         for attempt in range(2):  # one retry
             try:
-                lines = _clean_lines(llm.voice_npc(personas.persona_view(p), talk["allowed_topics"], payload,
+                lines = _clean_lines(llm.voice_npc(view, talk["allowed_topics"], payload,
                                                    context or {}))
             except Exception as e:  # provider stubs raise; a failed voice is never fatal
                 log.debug("voice_npc failed (attempt %s): %s", attempt + 1, e)

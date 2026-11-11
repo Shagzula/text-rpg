@@ -19,6 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Tuple
 
+from . import unseen
+
 CONTENT_DIR = Path(__file__).resolve().parents[1] / "content"
 FILES = {"interpret": "interpreter_prompt.md", "narrate": "narrator_prompt.md", "voice": "npc_voice_prompt.md"}
 CONTEXT_HEADINGS = ("## Game context", "## Setting and tone")
@@ -99,16 +101,23 @@ def context_values(context: Dict, player_text: str) -> Dict:
 
 
 def interpret_messages(context: Dict, player_text: str) -> Tuple[str, str]:
+    context = unseen.for_llm(context)
     system, section = template("interpret")
     return system, fill(section, context_values(context, player_text))
 
 
 def narrate_messages(result: Dict, context: Dict, player_text: str) -> Tuple[str, str]:
+    hidden = unseen.hidden_of(result) or unseen.hidden_of(context)
+    result = unseen.for_llm(result, hidden)
+    context = unseen.for_llm(context, hidden)
     system, section = template("narrate")
     return system, fill(section, {**context_values(context, player_text), "narration_result": result})
 
 
 def voice_messages(persona_view: Dict, payload: Dict) -> Tuple[str, str]:
+    hidden = unseen.hidden_of(persona_view) or unseen.hidden_of(payload)
+    persona_view = unseen.for_llm(persona_view, hidden)
+    payload = unseen.for_llm(payload, hidden)
     system, section = template("voice")
     vals = {**setting_values(), "npc": persona_view, "talk": payload.get("talk", {}),
             "player_text": fence_player_text(payload.get("player_text", "")),

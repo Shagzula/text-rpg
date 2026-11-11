@@ -1136,7 +1136,9 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     if wasted_round:
         out["wasted_round"] = True
     hidden.update(unseen.unseen_npcs(conn, character_id))  # ...or at its end: never named
-    return unseen.mask(out, hidden)
+    # Narrator-facing result is masked here; prompts.for_llm re-applies the same
+    # step at the interpret/narrate/voice request boundary (incl. compound flags).
+    return unseen.for_llm(unseen.carry(out, hidden), hidden)
 
 
 def death() -> Dict:
