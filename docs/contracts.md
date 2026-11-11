@@ -1,4 +1,4 @@
-# JSON contracts (v0.10.2)
+# JSON contracts (v0.10.3)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -71,8 +71,15 @@ Principles
   the NPC with it (`attack it`, `talk to whoever is there`), and the engine maps it back. In the engine
   result, every key of an NPC that was unseen at the start or end of the turn is replaced by its ref, and
   its `name` / `npc_name` / `speaker_name` by "unseen figure" (voiced lines: `speaker_name` "a voice in the
-  dark"), anywhere in the result (`results`, `consequences`, `npc_actions` incl. `follow`, `talk.npc`,
-  `dialogue`). Narrators describe such NPCs by sound only.
+  dark"), anywhere in the result (`results`, `consequences`, `state_changes` incl. compound `flag_set`
+  keys such as `defeated:npc_unseen_<id>`, `npc_actions` incl. `follow`, `talk.npc`, `dialogue`). The
+  canonical world flag (e.g. `defeated:npc_dozing_guard`) is still written in the DB; only the
+  narrator-facing copy is rewritten. Narrators describe such NPCs by sound only.
+  v0.10.3: the same masking step (`unseen.for_llm`) runs at the boundary where any engine result or
+  context is turned into an LLM-facing payload — interpret, narrate, and voice. Every field
+  (`state_changes`, flags, `npc_actions`, targets, `intent_summary`, conditions, `pending_clarify`,
+  persona_view, and anything else) goes through it, so a real key or display name of an NPC unseen
+  at that moment cannot reach the model. The player's own typed text (`player_text`) is not rewritten.
   v0.9: mock (and narrator) wording does not put an article before a proper-name NPC (a single
   capitalized word such as Mara: "Mara comes after you", not "the Mara"). Multi-word or lowercase
   names take "the" (the Dozing Guard, the unseen figure). A name that already starts with a/an/the
@@ -283,6 +290,10 @@ clarify has **several** candidates **re-asks the same sound question**; it is no
 does not consume a stall slot). The second consecutive affirmation re-ask of the same pending
 clarify **costs the round** (foe acts, question still shown), so `yes` cannot be used to stall.
 `yes` with nothing pending stays `unrecognized` and counts toward the 5-streak.
+OOC commands (`/help`, `/stats`, `/save`, `/load`, and an interpreter `ooc` proposal), malformed
+re-prompts, and a blank CLI enter are **not turns**: they neither increment nor reset the streak.
+The streak, last-clarify signature, and pending clarify are world flags, so they are part of the
+save; `/save` / `/load` (or quitting and continuing the working file) cannot be used to reset them.
 
 
 | turn contains | outside combat | hostile in the room at turn start |
@@ -681,6 +692,17 @@ caller, not only the CLI). The CLI catches it and prints the same too-long messa
   `LLMError` at once. The CLI shows interpreter errors without spending a turn.
 - **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
   (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.10.3
+1. BUG-R8-01: one masking step (`unseen.for_llm`) sits at the interpret / narrate / voice payload
+   boundary. Every field of the engine result and context is rewritten so real keys and names of
+   NPCs unseen at that moment become their opaque `npc_unseen_<id>` / "unseen figure" form,
+   including compound `flag_set` keys such as `defeated:npc_dozing_guard`. The world flag in the
+   DB keeps the canonical key. `player_text` is not rewritten.
+2. `yes` / `ok` / a bare pronoun with nothing pending is `unrecognized` and counts toward the
+   combat free-streak. OOC commands, `/save`, `/load`, and a blank CLI enter are not turns: they
+   neither count toward nor reset the streak. The streak is persisted in the save, so load cannot
+   clear it.
 
 ## Changes in v0.10.2
 1. BUG-R7-01: every mock/engine line that names an NPC goes through the article-aware `npc_ref`,
