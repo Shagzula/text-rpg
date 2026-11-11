@@ -458,7 +458,84 @@ def test_stall_costs_are_exact_at_each_step(demo):
     assert r["npc_actions"]
 
 
+def test_yes_with_nothing_pending_is_unrecognized_and_counts_toward_the_streak(demo):
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    last = None
+    for i in range(4):
+        last, out = say(demo, "yes", 1, 1)
+        assert last["results"][0]["detail"] == "unrecognized"
+        assert last.get("wasted_round") is not True and last["time_passed"] is False
+        assert "isn't something you can do" in out
+    last, _ = say(demo, "yes", 1, 1)
+    assert last["results"][0]["detail"] == "unrecognized"
+    assert last.get("wasted_round") is True and last["time_passed"] is True
+    assert last["npc_actions"]
+
+
+def test_ooc_neither_counts_toward_nor_resets_the_stall_streak(demo):
+    conn, cid = demo
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    for _ in range(4):
+        r, _ = say(demo, "asdfzxcvqwerty", 1, 1)
+        assert r.get("wasted_round") is not True and r["time_passed"] is False
+    assert int(db.get_flag(conn, actions.STREAK_FLAG + str(cid)) or 0) == 4
+    ooc = actions.process_action_proposal(conn, cid, {
+        "actions": [], "ooc": {"command": "help", "text": "/help"}, "unresolved_references": [],
+    })
+    assert ooc.get("type") == "ooc"
+    assert int(db.get_flag(conn, actions.STREAK_FLAG + str(cid)) or 0) == 4
+    r, _ = say(demo, "asdfzxcvqwerty", 1, 1)
+    assert r.get("wasted_round") is True and r["time_passed"] is True
+
+
+def test_save_load_preserves_the_combat_free_streak(tmp_path):
+    """OOC /help /stats /save /load and a blank enter neither increment nor reset the
+    streak; the streak lives in the save, so /load cannot be used to clear it."""
+    from rpg import cli
+    from rpg.llm import MockLLM, WASTED_ROUND_LINE
+
+    out = []
+    g = cli.Game(tmp_path / "w.db", llm=MockLLM(), rng=random.Random(5),
+                 input_fn=lambda _p: "", output_fn=out.append)
+    g.start(new=True)
+
+    def streak():
+        with db.connect(g.path) as conn:
+            return int(db.get_flag(conn, actions.STREAK_FLAG + str(g.cid)) or 0)
+
+    with db.connect(g.path) as conn:
+        conn.execute("UPDATE characters SET location_id = (SELECT id FROM locations WHERE key = 'loc_storeroom') "
+                     "WHERE id = ?", (g.cid,))
+        conn.execute("UPDATE npcs SET disposition = -80, current_hp = max_hp, alive = 1 "
+                     "WHERE key = 'npc_dozing_guard'")
+        conn.commit()
+
+    typo = "asdfzxcvqwerty"
+    for _ in range(4):
+        g.turn(typo)
+        assert streak() and streak() < actions.FREE_STREAK_CAP
+    assert streak() == 4
+    g.meta("/help")
+    g.meta("/stats")
+    assert g.save("mid")
+    # A blank CLI enter is not a turn (Game.run skips empty lines); the streak is unchanged.
+    assert streak() == 4
+    before = len(out)
+    g.turn(typo)  # 5th consecutive typo costs
+    assert streak() >= actions.FREE_STREAK_CAP
+    assert any(WASTED_ROUND_LINE in o for o in out[before:])
+    assert g.load("mid")
+    assert streak() == 4  # load restored the saved streak; it did not reset it
+    before = len(out)
+    g.turn(typo)
+    assert streak() >= actions.FREE_STREAK_CAP
+    assert any(WASTED_ROUND_LINE in o for o in out[before:])
+
+
 # --- input cap on interpret() --------------------------------------------------
+
 
 def test_interpret_enforces_the_300_character_cap(demo):
     long_text = "look " + "around " * 80
