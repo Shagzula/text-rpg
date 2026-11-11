@@ -268,3 +268,59 @@ def test_daze_narration(tmp_path):
     assert "you're dazed" in m._npc_action_text({**base, "dazed": "applied"})
     assert "Leather Cap takes the worst" in m._npc_action_text(
         {**base, "dazed": "negated", "negated_by": {"key": "item_leather_cap", "name": "Leather Cap"}})
+
+
+# --- v0.7.1: structured fields with engine defaults as the fallback --------------------------------
+
+def add_variant(w, base, new_id, name, **stats):
+    t = dict(YAML[base], id=new_id, name=name)
+    st = {k: v for k, v in YAML[base]["stats"].items() if k not in ("enables", "skill_bonus", "perk", "noise")}
+    t["stats"] = {**st, **stats}
+    db.add_item_template(w["conn"], t)
+
+
+def test_climbing_item_without_fields_falls_back_to_defaults(w):
+    add_variant(w, "item_rope", "item_vine", "Tough Vine")
+    v = inv.get_item(w["conn"], give(w, "item_vine"))
+    assert v["stats"]["enables"] == ["climb"] and v["stats"]["skill_bonus"]["skill"] == "athletics"
+
+
+def test_climbing_item_fields_override_defaults(w):
+    add_variant(w, "item_rope", "item_thin_cord", "Thin Cord", enables=[], skill_bonus={})
+    v = inv.get_item(w["conn"], give(w, "item_thin_cord"))
+    assert v["stats"]["enables"] == [] and v["stats"]["skill_bonus"] == {}
+
+
+def test_gloves_without_perk_field_fall_back_to_the_engine_default(w):
+    stats = {k: v for k, v in YAML["item_work_gloves"]["stats"].items() if k != "perk"}
+    assert effects.perk_of({"stats": stats, "template_key": "item_work_gloves"}) == \
+        effects.EQUIP_PERKS["item_work_gloves"]
+    assert effects.perk_of({"stats": YAML["item_work_gloves"]["stats"], "template_key": "x"}) == \
+        YAML["item_work_gloves"]["stats"]["perk"]
+
+
+def test_whistle_reads_stats_noise(w):
+    hostile(w)
+    add_variant(w, "item_signal_whistle", "item_rattle", "Bone Rattle", subcategory="toy",
+                noise={"distract": "next_attack", "once_per_foe": False, "heard_range": "room"})
+    give(w, "item_rattle")
+    r = run(w, act("use_item", items_used=["item_rattle"]), rng=Script(19, 2))
+    cons = r["results"][0]["consequences"]
+    assert "npc_mara" not in cons[0]["heard_by"]  # heard_range: room
+    assert any(c.get("name") == "distracted" for c in cons)
+    r = run(w, act("use_item", items_used=["item_rattle"]), rng=Script(19, 2))  # not once_per_foe
+    assert any(c.get("name") == "distracted" for c in r["results"][0]["consequences"])
+
+
+def test_noise_without_distraction(w):
+    hostile(w)
+    add_variant(w, "item_signal_whistle", "item_bell", "Hand Bell", noise={"distract": None})
+    give(w, "item_bell")
+    r = run(w, act("use_item", items_used=["item_bell"]), rng=Script(15, 1))
+    assert [c["type"] for c in r["results"][0]["consequences"]] == ["noise_made"]
+
+
+def test_whistle_falls_back_to_subcategory_signal(w):
+    assert "noise" not in YAML["item_signal_whistle"]["stats"]
+    assert effects.noise_spec({"stats": YAML["item_signal_whistle"]["stats"]}) == effects.DEFAULT_NOISE
+    assert effects.noise_spec({"stats": {"subcategory": "lever"}}) is None

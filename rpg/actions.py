@@ -40,7 +40,6 @@ BACK = "back"  # the exit leading to where you came from
 # Ways to get through something locked (an exit, or an item whose state is 'locked').
 LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
 TOOL_REQUIRED_METHODS = ("pick_lock",)
-SIGNAL_SUBCATEGORY = "signal"  # v0.7: items_tier1.yaml stats.subcategory; using one makes a noise (whistle)
 IMPROVISED_PICK_TAG = "improvised_pick"  # e.g. a knife: picks a lock at very_hard (25)
 TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_open"))  # impossible without a tool that enables it
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
@@ -647,7 +646,7 @@ class Turn:
             return self.result(a, target={"key": item["key"], "name": item["name"]}, state_changes=[change])
         if effect == "condition":  # thrown at NPCs: flash powder
             return self._use_condition_item(a, t, item)
-        if stats.get("subcategory") == SIGNAL_SUBCATEGORY and not effect:  # v0.7: the signal whistle
+        if effects.noise_spec(item):  # v0.7/v0.7.1: stats.noise, else subcategory signal (the whistle)
             if item["character_id"] != self.cid:
                 raise Reject("item_not_owned", "not_held")
             return self.result(a, target={"key": item["key"], "name": item["name"]},

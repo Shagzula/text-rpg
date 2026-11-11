@@ -396,24 +396,43 @@ DAZED = "dazed"  # v0.7.1: from an overwhelming NPC hit; disadvantage on every c
 WHISTLED_FLAG = "noise_distracted:"
 
 
+DEFAULT_NOISE = {"heard_range": "adjacent", "distract": "next_attack", "once_per_foe": True}
+
+
+def noise_spec(item: Dict) -> Optional[Dict]:
+    """v0.7.1: stats.noise (e.g. {distract: next_attack, once_per_foe: true}) over DEFAULT_NOISE; an item with
+    no `noise` but `subcategory: signal` (and no `effect`) gets DEFAULT_NOISE; anything else makes no noise."""
+    s = item["stats"]
+    if isinstance(s.get("noise"), dict):
+        return {**DEFAULT_NOISE, **s["noise"]}
+    if s.get("subcategory") == "signal" and not s.get("effect"):
+        return dict(DEFAULT_NOISE)
+    return None
+
+
 def make_noise(conn, character_id, item: Dict) -> List[Dict]:
     """v0.7 whistle (YAML: "loud noise audible ~600 ft; can distract"; tag `noisy`). Consequences:
     `noise_made {key, name, heard_by: [npc keys]}` for every living NPC here or one exit away, then
     `npc_condition {..., name: "distracted", outcome: "applied"}` for each living, hostile, non-incapacitated
     NPC here that hasn't been distracted by a noise before (once per NPC per game: they won't fall for it
     twice). Distracted (1 turn, effect {attack_disadvantage: true}): its next attack rolls at disadvantage."""
+    spec = noise_spec(item) or dict(DEFAULT_NOISE)
     loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()[0]
-    rooms = [loc] + [r[0] for r in conn.execute(
-        "SELECT DISTINCT to_location_id FROM location_exits WHERE from_location_id = ?", (loc,))]
+    rooms = [loc]
+    if spec.get("heard_range") != "room":
+        rooms += [r[0] for r in conn.execute(
+            "SELECT DISTINCT to_location_id FROM location_exits WHERE from_location_id = ?", (loc,))]
     heard = []
     for lid in rooms:
         heard += [r["key"] for r in conn.execute("SELECT key FROM npcs WHERE location_id = ? AND alive = 1 "
                                                   "ORDER BY id", (lid,))]
     out = [{"type": "noise_made", "key": item["key"], "name": item["name"], "heard_by": heard}]
+    if spec.get("distract") != "next_attack":  # only distraction mode so far; anything else: noise only
+        return out
     for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id", (loc,)).fetchall():
         if rules.disposition_band(n["disposition"]) != "hostile" or npc_incapacitated(conn, n["id"]):
             continue
-        if db.get_flag(conn, WHISTLED_FLAG + n["key"]):
+        if spec.get("once_per_foe", True) and db.get_flag(conn, WHISTLED_FLAG + n["key"]):
             continue
         db.set_flag(conn, WHISTLED_FLAG + n["key"], True)
         conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (n["id"], DISTRACTED))
