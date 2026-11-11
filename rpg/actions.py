@@ -454,16 +454,20 @@ class Turn:
             changes.append({"type": "flag_set", "key": flag, "value": True})
         return self.result(a, target=t, check=check, state_changes=changes)
 
-    def default_talk_target(self, a) -> Tuple[Dict, Optional[str]]:
-        """Bare 'talk': the only living NPC here, or a question if there are several."""
-        npcs = self.conn.execute("SELECT key, name FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id",
+    def default_npc_target(self, a, verb: str = "talk to") -> Tuple[Dict, Optional[str]]:
+        """Bare 'talk' / 'attack' (BUG-R04, BUG-R4-01): the only living NPC here, visible or only heard;
+        a question if there are several (unseen ones by their sound, never by name); else unchanged."""
+        npcs = self.conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id",
                                  (self.loc_id,)).fetchall()
         if len(npcs) == 1:
             return {**a, "target": npcs[0]["key"]}, None
         if len(npcs) > 1:
-            names = [n["name"] for n in npcs]
-            return a, "Who do you want to talk to: " + ", ".join(names[:-1]) + " or " + names[-1] + "?"
+            names = [n["name"] if self.lit else f"the one making {unseen.sound(self.conn, n)}" for n in npcs]
+            return a, f"Who do you want to {verb}: " + ", ".join(names[:-1]) + " or " + names[-1] + "?"
         return a, None
+
+    def default_talk_target(self, a) -> Tuple[Dict, Optional[str]]:
+        return self.default_npc_target(a, "talk to")
 
     def do_talk(self, a, t):
         if t is None:
@@ -900,8 +904,8 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 question = a["clarification_question"] or _generic_question([a["intent_summary"]])
                 results.append(turn.clarify(a))
                 continue
-            if a["action_type"] == "talk" and a["target"] is None:
-                a, ask = turn.default_talk_target(a)  # BUG-R04
+            if a["action_type"] in ("talk", "attack") and a["target"] is None:
+                a, ask = turn.default_npc_target(a, "talk to" if a["action_type"] == "talk" else "attack")
                 if ask:
                     question = ask
                     results.append(turn.clarify(a))

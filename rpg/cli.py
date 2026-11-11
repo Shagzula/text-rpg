@@ -157,7 +157,7 @@ class Game:
                 return None
             after = build_context(conn, self.cid)
             talk.voice(conn, self.llm, result, text, after)  # NPC lines -> result["dialogue"] (§g)
-            narration = llm_mod.narrate_safely(self.llm, result, after)
+            narration = llm_mod.ensure_wasted_round_line(llm_mod.narrate_safely(self.llm, result, after), result)
             log_narration(conn, self.cid, result["turn"] or 0, narration)
             db.save_rng_state(conn, self.rng)
         self.out(narration)

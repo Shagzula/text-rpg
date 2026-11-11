@@ -626,6 +626,14 @@ raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_
 ## Changes in v0.8
 1. Real `OpenAIClient` / `AnthropicClient` (section (e)), prompt loading from content, the generated
    proposal schema, per-role models, dry-run. No engine rule changes (the v0.7.1 freeze holds).
+2. Bug fixes from retest 884cdf1 (no new rules):
+   - BUG-R4-01: `attack` with `target: null` gets the same default as bare `talk`: the only living NPC
+     here (visible or only heard; unseen ones resolve to their `npc_unseen_<id>` ref in the result); with
+     several, a free clarify "Who do you want to attack: A or B?" (in the dark: "the one making <sound>",
+     never a name; bare `talk` now asks the same way); with none, `target_not_present` / `no_target`,
+     narrated as "There's no one here to fight." (not the talk line).
+   - Whenever `result.wasted_round` is set, the CLI makes sure the narration carries "You lose precious
+     moments, and your foe doesn't wait." (prepended if the narrator left it out), whatever the action.
 
 ## Changes in v0.7.1 (engine features FROZEN for the slice after this)
 1. Overwhelming NPC hits daze the player for 1 round (`npc_actions[].dazed`); the leather cap's once-per-rest

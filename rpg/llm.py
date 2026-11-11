@@ -12,6 +12,7 @@ import re
 from typing import Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 CLOSING_LINE = "What do you do?"
+WASTED_ROUND_LINE = "You lose precious moments, and your foe doesn't wait."
 FALLBACK_NARRATION = "The moment passes in a blur, and the details are hard to make out."
 
 
@@ -69,6 +70,14 @@ def finalize_narration(text, regenerate: Optional[Callable[[], str]] = None, *, 
     if defeat:
         return strip_closing_line(text.strip()) or FALLBACK_NARRATION
     return ensure_closing_line(text.strip())
+
+
+def ensure_wasted_round_line(text: str, result: Dict) -> str:
+    """Polish (retest 884cdf1): whenever result.wasted_round is set, the player always sees the warning,
+    whatever the action and whatever the narrator wrote. Driven by the flag only."""
+    if not result.get("wasted_round") or WASTED_ROUND_LINE in text:
+        return text
+    return f"{WASTED_ROUND_LINE}\n{text}"
 
 
 def narrate_safely(llm: "LLMClient", result: Dict, context: Dict) -> str:
@@ -246,7 +255,8 @@ class MockLLM:
             else:
                 action["items_used"] = [i["key"] for i in context.get("player_inventory", [])
                                         if i.get("equipped") and i.get("slot") in ("main_hand", "two_hands")][:1]
-            action.update(action_type="attack", skill="str", intent_summary=f"Attack the {rest}.")
+            action.update(action_type="attack", skill="str",
+                          intent_summary=f"Attack the {rest}." if rest.strip() else "Attack.")
         elif verb == "use_item":
             item_txt, _, on_txt = rest.partition(" on ")
             if not on_txt and " at " in rest:
@@ -422,7 +432,7 @@ class MockLLM:
 
     def _match(self, phrase: str, context: Dict, pools, prefix: str):
         """Return (key, ambiguous_candidates). Unknown things get a best-guess slug."""
-        if "npc" in pools and set(re.findall(r"[a-z]+", phrase.lower())) - {"the"} <= PRONOUNS:
+        if "npc" in pools and phrase.strip() and set(re.findall(r"[a-z]+", phrase.lower())) - {"the"} <= PRONOUNS:
             dark = [n["key"] for n in context.get("npcs_present", []) if not n.get("visible", True)]
             if len(dark) == 1:  # v0.7.1: "attack it" in the dark means the one thing you can hear
                 return dark[0], []
@@ -504,7 +514,7 @@ class MockLLM:
                 continue
             lines.append(self._narrate_one(r, context))
         if result.get("wasted_round"):
-            lines.append("You lose precious moments, and your foe doesn't wait.")
+            lines.append(WASTED_ROUND_LINE)
         lines += [self._npc_action_text(a) for a in result.get("npc_actions", [])]
         lines += [self._expired_text(e) for e in result.get("expired", [])]
         if result.get("defeat"):
@@ -608,6 +618,8 @@ class MockLLM:
                 str((r.get("target") or {}).get("key", "")).startswith("npc_") and r.get("detail") != "no_target":
             who = (r.get("target") or {}).get("name")
             return f"{who} isn't here." if who else "There's nobody like that here."
+        if r["status"] == "rejected" and r.get("detail") == "no_target" and r.get("action_type") == "attack":
+            return "There's no one here to fight."  # BUG-R4-01: not the talk line
         if r["status"] == "rejected":
             return self.DETAIL_TEXT.get(r.get("detail"), self.REJECT_TEXT.get(r["reason"], "That doesn't work."))
         out = []

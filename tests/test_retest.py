@@ -561,3 +561,97 @@ def test_gift_voice_lines_fit_the_gift(tmp_path):
     joined = "\n".join(out)
     assert "That's... kind of you." in joined and "I've no use for that." in joined
     assert "Don't touch what you can't pay for." not in joined
+
+
+# --- retest 884cdf1 ----------------------------------------------------------------------------------
+
+def test_r4_01_bare_attack_targets_the_only_npc(demo):
+    conn, cid = demo
+    go(demo, "loc_storeroom")
+    r, out = say(demo, "attack", 20, 6, 1, 1, 1)
+    res = r["results"][0]
+    assert res["status"] == "resolved" and res["target"]["key"] == "npc_dozing_guard", res
+    assert "talk to" not in out
+
+
+def test_r4_01_bare_attack_targets_the_only_unseen_npc_by_ref(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET location_id = (SELECT id FROM locations WHERE key = 'loc_cellar') "
+                 "WHERE key = 'npc_dozing_guard'")
+    go(demo, "loc_cellar")
+    r, out = say(demo, "attack", 20, 6, 1, 1, 1)
+    res = r["results"][0]
+    assert res["status"] == "resolved" and res["target"]["key"].startswith("npc_unseen_")
+    assert "Dozing Guard" not in out and "guard" not in out.lower()
+
+
+def test_r4_01_bare_attack_with_several_npcs_asks_and_is_free(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET location_id = (SELECT id FROM locations WHERE key = 'loc_storeroom')")
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    r, out = say(demo, "attack")
+    assert r["results"][0]["status"] == "clarify" and not r["time_passed"] and not r.get("wasted_round")
+    assert r["clarification_question"] == "Who do you want to attack: Mara or Dozing Guard?"
+    assert r["npc_actions"] == []
+
+
+def test_r4_01_several_unseen_npcs_are_asked_about_by_sound(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET location_id = (SELECT id FROM locations WHERE key = 'loc_cellar')")
+    go(demo, "loc_cellar")
+    for verb in ("attack", "talk"):
+        r, out = say(demo, verb)
+        q = r["clarification_question"]
+        assert q.startswith(f"Who do you want to {'attack' if verb == 'attack' else 'talk to'}: the one making ")
+        assert "slow, heavy breathing" in q and "Mara" not in q and "Guard" not in q
+
+
+def test_r4_01_bare_attack_with_nobody_here_has_an_attack_line(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET location_id = (SELECT id FROM locations WHERE key = 'loc_cellar')")
+    r, out = say(demo, "attack")
+    assert r["results"][0]["detail"] == "no_target" and not r["time_passed"]
+    assert "There's no one here to fight." in out and "talk to" not in out
+    assert "Attack the ." not in r["results"][0]["intent_summary"]
+
+
+def test_r4_01_dead_npcs_are_not_default_targets(demo):
+    conn, cid = demo
+    go(demo, "loc_storeroom")
+    conn.execute("UPDATE npcs SET alive = 0 WHERE key = 'npc_dozing_guard'")
+    r, out = say(demo, "attack")
+    assert r["results"][0]["detail"] == "no_target" and "no one here to fight" in out
+
+
+class SilentNarrator(llm_mod.MockLLM):
+    """A narrator that never mentions the wasted round (like a real LLM might)."""
+
+    def narrate(self, result, context):
+        return "Mara isn't here." if result.get("results") else super().narrate(result, context)
+
+
+@pytest.mark.parametrize("text", ["talk to mara", "go north", "attack mara", "rest", "take the moon",
+                                  "give the crowbar to mara"])
+def test_polish_wasted_round_warning_always_printed(tmp_path, text):
+    from test_cli import Script
+    from rpg import cli
+    out = []
+    g = cli.Game(tmp_path / "w.db", llm=SilentNarrator(), rng=random.Random(5),
+                 input_fn=Script("/quit"), output_fn=out.append)
+    g.run(new=True)
+    with db.connect(g.path) as conn:
+        conn.execute("UPDATE characters SET location_id = (SELECT id FROM locations WHERE key = 'loc_storeroom'), "
+                     "current_hp = 200, max_hp = 200 WHERE id = ?", (g.cid,))
+        conn.execute("UPDATE npcs SET disposition = -80 WHERE key = 'npc_dozing_guard'")
+    out.clear()
+    g.turn(text)
+    assert out and out[0].startswith(llm_mod.WASTED_ROUND_LINE), out
+    assert out[0].count(llm_mod.WASTED_ROUND_LINE) == 1
+
+
+def test_polish_warning_is_driven_by_the_flag_only():
+    assert llm_mod.ensure_wasted_round_line("x", {"wasted_round": True}) == f"{llm_mod.WASTED_ROUND_LINE}\nx"
+    assert llm_mod.ensure_wasted_round_line("x", {}) == "x"
+    once = f"a\n{llm_mod.WASTED_ROUND_LINE}\nb"
+    assert llm_mod.ensure_wasted_round_line(once, {"wasted_round": True}) == once
