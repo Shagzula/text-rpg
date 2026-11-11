@@ -1,6 +1,6 @@
-# JSON Shapes — AGREED (matches contracts.md v0.6)
+# JSON Shapes — AGREED (matches contracts.md v0.7)
 
-> **Status: AGREED (matches contracts.md v0.6).** Updated Nov 10, 2026 (CST). Authoritative source: `/home/box/rpg-project/code/docs/contracts.md` (v0.6, implemented in `rpg/actions.py`, `rpg/context.py`, `rpg/effects.py`, `rpg/talk.py`, `rpg/personas.py`, `rpg/rules.py`). This file is the prompt-layer summary. If they ever differ, contracts.md wins. This directory is vendored into `code/content/` (drift-tested), so it stays the source of truth. Sections (d)–(g) (NPC dialogue) are **ACCEPTED** and implemented (contracts §d). No open engine requests.
+> **Status: AGREED (matches contracts.md v0.7).** Updated Nov 10, 2026 (CST). Authoritative source: `/home/box/rpg-project/code/docs/contracts.md` (v0.7, implemented in `rpg/actions.py`, `rpg/context.py`, `rpg/effects.py`, `rpg/talk.py`, `rpg/personas.py`, `rpg/rules.py`). This file is the prompt-layer summary. If they ever differ, contracts.md wins. This directory is vendored into `code/content/` (drift-tested), so it stays the source of truth. Sections (d)–(g) (NPC dialogue) are **ACCEPTED** and implemented (contracts §d). No open engine requests.
 
 Core principle: the LLM proposes and describes, the engine decides. The engine owns every DC (authored `unlock_dc`, item `stats.dc`, NPC `defense_dc`, else the `est_difficulty` hint; a `force_open` tool caps the DC at 20). The narrator never sees `roll`, `dc`, `modifier`, `bonus`, `total`, `margin`, `needed_roll`, advantage/disadvantage, or condition `effect` math.
 
@@ -25,7 +25,7 @@ Keys: `loc_<slug>`, `npc_<slug>`, `item_<slug>` (extras `_2`, `_3`). Exits are t
 
 `active_conditions` (a duplicate of `player_sheet.conditions`) isn't used by the prompts.
 
-- **Darkness:** when `dark && !lit`, `description` = "It is pitch dark; you can see nothing.", `visible_items` = `[]`, and every NPC has `visible: false` (still listed; hostile ones still attack). Exits stay listed. A lit light source held or lying here lights the place.
+- **Darkness:** when `dark && !lit`, `description` = "It is pitch dark; you can see nothing.", `visible_items` = `[]`, and every NPC has `visible: false` (still listed; hostile ones still attack). Exits stay listed. A lit light source held or lying here lights the place. v0.6.1: looking around the room in the dark resolves with `felt` (the felt items), and the narrator lists them with the darkness text and the exits. Unseen NPCs are heard, not seen ("Close by in the dark you hear …").
 - Bands: disposition `hostile` (<= -50) / `unfriendly` (<= -10) / `neutral` / `friendly` (>= 10) / `allied` (>= 50). HP `unhurt`, `scratched`, `wounded`, `badly_wounded`, `near_death`, `down`.
 - Fixtures: `fixture: true` / tag `fixture`. They can be examined, used, and targeted. Taking one → `item_unusable` / `fixture`. You can attack only with **held** items (`item_not_owned` / `not_held`).
 
@@ -114,7 +114,7 @@ Not for the narrator: the malformed-proposal re-prompt object, and the ooc-only 
 | `auto_success`, `impossible`, `last_ditch` | Booleans, false without a check |
 | `target` | `{key, name}` (`examine` adds `description`; a felt item in the dark: "You find it by touch in the dark: the X."). Self → `{"key": "self", "name": "you"}`. |
 | `felt` | `examine` results in the dark, v0.6: `[{key, name}]` found by touch (feeling around the room: fixtures; a successful search: loose items too). Narrated by touch only. |
-| `consequences` | `condition`, `condition_removed` (optional `reason: "spent"`), `healed {target, hp_band}`, `damage_dealt {target, hp_band}`, `item_used`, `item_consumed`, `npc_disposition_changed {key, to}`, `npc_condition {key, npc_name, name, outcome: "applied"\|"resisted"}`, `tool_used {key, name}`, `darkness {description}`, `purse_changed {direction: "spent"|"received"}` (no amount). Reserved: `damage_taken` (player damage is in `npc_actions`), `item_broken`, `noise_made`. |
+| `consequences` | `condition`, `condition_removed` (optional `reason: "spent"`), `healed {target, hp_band}`, `damage_dealt {target, hp_band}`, `item_used`, `item_consumed`, `npc_disposition_changed {key, to}`, `npc_condition {key, npc_name, name, outcome: "applied"\|"resisted"}`, `tool_used {key, name}`, `darkness {description}`, `purse_changed {direction: "spent"|"received"}` (no amount); v0.7: `noise_made {key, name, heard_by: [npc keys]}`, `perk_used {key, name}`, and `condition` may carry `negated_by {key, name}` (the condition was blocked by an equipped perk, not applied); `npc_condition` `distracted` (whistle). Reserved: `damage_taken` (player damage is in `npc_actions`), `item_broken`. |
 | `state_changes` | `moved_to_location {key, name, dark}` (`dark: true` = arrived somewhere pitch dark), `exit_state {key, direction, from, to}`, `item_added`, `item_removed` (`from: "scene"` when used where it lay), `item_equipped`, `item_unequipped`, `entity_state {key, name?, field, from, to}` (incl. `lit`/`unlit`, `locked`→`open`, `damaged`), `npc_defeated`, `flag_set`. Reserved: `exit_revealed`, `npc_fled`. |
 
 ### Validation (rejects only that action)
@@ -130,7 +130,7 @@ Not for the narrator: the malformed-proposal re-prompt object, and the ooc-only 
 As before: `unresolved_references` → the whole turn clarifies. `clarification_needed` on action N → earlier actions resolve, N clarifies, later ones are skipped. A rejection never stops others. A failed check skips dependent later actions (after a failed `move`, or sharing a target/item). Optional top-level `skipped: [{action_type, intent_summary, reason: "prior_failure"|"prior_clarify"}]` is **never narrated**.
 
 ### Time, NPC phase, timers (v0.6)
-- `time_passed: true` if at least one action resolved (one turn ≈ one minute), **or** (Lead, DECIDED) a living hostile was in the room at the start of the turn and an action was rejected: a **wasted round** (top-level `wasted_round: true`). Clarify, malformed and OOC never cost time. Then NPC conditions tick (skipping ones applied this turn), pursuit runs (`follow`), the NPC phase runs (`npc_actions`), then player conditions and lights tick (`expired`, in that order). Otherwise `npc_actions: []`, `expired: []`, and the turn number isn't spent.
+- `time_passed: true` if at least one action resolved (one turn ≈ one minute), **or** (Lead, DECIDED) a living hostile was in the room at the start of the turn and a *parsed* action was rejected (not `unrecognized`, v0.6.1): a **wasted round** (top-level `wasted_round: true`). Clarify, malformed and OOC never cost time. Then NPC conditions tick (skipping ones applied this turn), pursuit runs (`follow`), the NPC phase runs (`npc_actions`), then player conditions and lights tick (`expired`, in that order). Otherwise `npc_actions: []`, `expired: []`, and the turn number isn't spent.
 - **Pursuit** (Lead, DECIDED): if the player left a room holding a living, hostile, reachable, able NPC, it follows once into the new room (`action: "follow"`, outcome/degree null; that's its action this turn), also in the dark.
 - `npc_actions[]`: `{npc, name, action: "attack"|"none"|"follow", outcome: "success"|"failure"|null, degree, hp_band, reason?}`. `hp_band` = the **player's** band after it. Every alive, hostile, reachable NPC in the location acts once (incapacitated, read from the condition effect `no_attack`/`prevents_actions`/`incapacitated` → `none` + reason, e.g. `blinded`). It stops when the player is down. A surviving attacked NPC turns hostile and counterattacks the same turn. **Unseen (`visible: false`) NPCs still attack.**
 - `expired[]`: `condition_expired {target: "self", name}`, `npc_condition_expired {key, npc_name, name}`, `light_burnt_out {key, name}`.
@@ -165,18 +165,19 @@ As before: `unresolved_references` → the whole turn clarifies. `clarification_
   notes: "Finesse sidearm."   # -> description
 ```
 
-- **Engine-read `stats` keys (v0.5):** `damage`, `properties`, `range`, `proficiency`, `improvised_damage`, `effect`, `amount`, `condition`, `uses`, `check {skill, est_difficulty}`, `dc`, `use_sets_flag`, `base_ac`, `dex_cap`, `ac_bonus`, `enables`, `skill_bonus {skill, grants}`, `duration`, `save {ability, est_difficulty}`, `condition_effect`, `condition_name`.
+- **Engine-read `stats` keys (v0.7; adds `perk`, and `subcategory` values `climbing`/`signal`):** `damage`, `properties`, `range`, `proficiency`, `improvised_damage`, `effect`, `amount`, `condition`, `uses`, `check {skill, est_difficulty}`, `dc`, `use_sets_flag`, `base_ac`, `dex_cap`, `ac_bonus`, `enables`, `skill_bonus {skill, grants}`, `duration`, `save {ability, est_difficulty}`, `condition_effect`, `condition_name`.
 - `effect` enum: `heal`, `cure_condition`, `buff` (player condition), `condition` (NPC save), `light` (toggle, timer from `duration`), `sustenance` (eaten on rest → full heal). Prose-only notes live in `use_note`, `buff`, `side_effect`.
 - `condition_effect` shapes: player buff `{advantage: [...], disadvantage: [...], expires_after_check: [...]}` (`item_bracing_tonic` → `braced`). NPC condition `{no_attack: true}` (`item_flash_powder` → `blinded`, 1 turn).
+- **v0.7 structured perks** (the YAML values equal the engine defaults, so the data is the source of truth): climbing items (`stats.subcategory: climbing`, `item_rope`) carry `enables: [climb]` + `skill_bonus: {skill: athletics, grants: advantage}` (an athletics `move` is method `climb`; a held rope gives advantage, and other athletics checks get it only when the rope is in `items_used`). Equipment `stats.perk` (equipped only): `item_leather_cap` `{negate_conditions: [stunned, dazed], per: rest}`, `item_work_gloves` `{advantage_tags: [climbing, sharp, hot, rough], advantage_methods: [climb]}`. `item_signal_whistle` (`subcategory: signal`, no `effect`) makes `noise_made` and distracts each hostile here once (`distracted`, 1 turn, `{attack_disadvantage: true}`); there's no stats override for it. `item_travel_boots`: no perk.
 - Tags: exactly one `rarity_*` and one `avail_*`. `fixture` = scenery. **`improvised_pick`** = a makeshift lockpick: with no lock tool held, `pick_lock` proceeds at DC 25 (or the authored DC if higher), and the item is used automatically. Bare hands → `needs_tool`. Tagged: `item_knife`. Item names contain no digits (load-time check).
 - Instances (`items`): `key`, `template_id`, `character_id`|`location_id`, `display_name`, `quantity`, `equipped`, `uses_left`, `state`, `out_of_reach`, `timer`.
 
 
 ---
 
-# NPC dialogue: AGREED (matches contracts.md v0.6 §d)
+# NPC dialogue: AGREED (matches contracts.md v0.7 §d)
 
-> **Status: AGREED (matches contracts.md v0.6)** (Nov 10, 2026, CST). Sections (d)–(g) are implemented in `rpg/talk.py`, `rpg/personas.py`, `rpg/context.py` and `LLMClient.voice_npc`, with the deviations listed in contracts §d (all adopted below). Persona file format: `npc_persona_schema.md`. Rationale for the separate voice call: README, "Dialogue architecture".
+> **Status: AGREED (matches contracts.md v0.7)** (Nov 10, 2026, CST). Sections (d)–(g) are implemented in `rpg/talk.py`, `rpg/personas.py`, `rpg/context.py` and `LLMClient.voice_npc`, with the deviations listed in contracts §d (all adopted below). Persona file format: `npc_persona_schema.md`. Rationale for the separate voice call: README, "Dialogue architecture".
 
 ## (d) Context: `npcs_present[].topics`, `trades`, `recent_dialogue`; `player_sheet.gold`
 
@@ -221,9 +222,9 @@ Added to the action object **only when `action_type` is `talk`** (non-talk actio
 | field | type | rule |
 |---|---|---|
 | `target` | string or null | The NPC key. If null: exactly one living NPC here → that NPC; several → clarify ("Who do you want to talk to: ...?"); none → `target_not_present` / `no_target`. |
-| `approach` | enum, optional | `ask`, `persuade`, `deceive`, `intimidate`, `insight`, `small_talk`, `trade`, `farewell`. **Missing → inferred from the skill, else `ask`.** An unknown value → re-prompt. Interpreters should still emit it. |
+| `approach` | enum, optional | `ask`, `persuade`, `deceive`, `intimidate`, `insight`, `small_talk`, `trade`, `gift` (v0.6.1), `farewell`. **Missing → inferred from the skill, else `ask`.** An unknown value → re-prompt. Interpreters should still emit it. |
 | `topic` | string or null | **Exact match only:** the subject (determiners dropped, singularised) equals a `topics`/`trades` key, one of its `aliases`, a `label` segment split on "/", or (trades) an item name in its gives/wants. Else null. No substring matching. |
-| `topic_text` | string or null | The player's subject in their own words when `topic` is null. null when there's no subject. |
+| `topic_text` | string or null | The player's subject in their own words when `topic` is null; null when there's no subject. v0.6.1: with `topic` = a subject key on a social approach, the **cited learned topic** (key, alias or label segment of a topic revealed by any NPC) offered as new leverage. |
 | `quantity` | int or null | v0.6, trade only: how many of a **repeatable** trade ("buy three rations" → 3). The engine accepts 1–10. 0, negatives, > 10, > 1 on a one-time trade, or any quantity on a bare trade → `impossible_action` / `bad_quantity`. A non-int (or bool) → re-prompt. |
 | `skill` | string or null | Pairing: `persuade` → `persuasion`, `deceive` → `deception`, `intimidate` → `intimidation`, `insight` → `insight`; others null. **A mismatch is corrected, not rejected.** |
 
@@ -280,13 +281,15 @@ with `consequences: [{"type": "purse_changed", "direction": "spent"}]` and `stat
 | `allowed_topics` | `[{key, text}]`: the requested topic when revealed, else `[]`. **Never a secret below its band, never a `never` secret.** |
 | `refused_topics` | `[{key, label}]`: the requested topic when refused. Label only. Only topics already visible in context. |
 | `trade` | null, or `{key, label, status: "offered" \| "completed" \| "refused" \| "unaffordable", gives: [entry], wants: [entry], quantity?, options?}`, entry = `{item, name, qty}` or `{gold: N}` (**band-priced**, × quantity). `quantity` appears when > 1. A bare trade → `offered`, `key/label: null`, empty gives/wants, `options: [{key, label, aliases?, gives, wants}]` (every open trade). A higher-band trade refused → `key` kept, `label: null`. |
+| `gift` | Only on `approach: gift`: `{status: "accepted" \| "declined", items: [{key, name, accepted, reason?: "own_stock" \| "already_given" \| "not_valued"}]}`. Accepted items → `item_removed {key, name, given_to}`. `trade` is null and `requested_topic_status` is `none`. |
 | `insight_read` | null, or the persona's `insight_tell` on a successful insight check (narrator only; stripped from the voice input) |
 
 Rules:
 - Persona-less NPC: `talk` present with empty lists and `trade: null`. Rejected or clarify talk results have **no** `talk` block (and no voice call).
 - **Social DC** = persona `social.base_dc` (12) + `social.<skill>` + band modifier (hostile +5, unfriendly +2, neutral 0, friendly -2, allied -5). `est_difficulty` is ignored for persona NPCs.
-- **No-retry rule** (Lead, DECIDED; 5e): the same NPC + paired approach + subject again → `impossible_action` / `no_new_leverage` (no roll), unless 10+ turns have passed, the disposition changed, or `items_used` has something new.
-- **Social cap** (Lead, DECIDED): persuade/deceive gains stop at 49 (top of `friendly`). `allied` comes only from other means (quests, story, a trade's +2).
+- **No-retry rule** (Lead, DECIDED; 5e): the same NPC + paired approach + subject again → `impossible_action` / `no_new_leverage` (no roll), unless 10+ turns have passed, the disposition changed, `items_used` has something new, or (v0.6.1) `topic_text` cites a topic revealed since the last attempt (not the subject itself). Only a real topic/trade key is a subject; a paraphrase folds into the last subject.
+- **Cap at friendly** (Lead, DECIDED, widened v0.6.1): every small gain (social checks *and* a trade's +2) stops at 49. Only **gifts** and story events (`talk.story_disposition`) reach `allied`.
+- **Gifts** (v0.6.1): `approach: gift`, no roll. Per item: valued via persona `gifts` (gain 1..50) or by default when worth ≥ 50 coins (+10); declined as `own_stock` (the NPC trades it away), `already_given` (each template once per NPC), or `not_valued`. Gains are uncapped. Rejections: `item_not_owned` / `no_item` (nothing named), `no_such_item` or `not_held`. Persona `gifts` is engine-only.
 - **Topics** are evaluated at the band after this turn's change. A successful `intimidate` evaluates them one band above the **pre-drop** band (cowed).
 - **Trades:** bare trade (`topic` and `topic_text` null) → `offered` with `options` (never a fallback to one listing); `refused` if nothing is open. `topic` = trade key → `completed` if open and affordable, short of coins → `unaffordable`; not open at the band → `refused`. Rejections (no time outside combat): `no_such_trade` (unmatched `topic_text`, or a non-trade key), `trade_done` (a one-time trade already made), `bad_quantity`, `item_not_owned` / `trade_item_missing`. Completion: `item_removed` for wanted items, `purse_changed {direction}` for coins, `item_added` (display `name`) for given items, disposition +2. One-time trades complete once; `repeatable: true` ones any number of times.
 - **Coin pricing:** pay base × {hostile 1.5, unfriendly 1.25, neutral 1.0, friendly 0.9, allied 0.75} rounded up; receive base × {hostile 0.5, unfriendly 0.75, neutral 1.0, friendly 1.1, allied 1.25} rounded down; min 1. Item entries aren't scaled.

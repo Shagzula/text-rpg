@@ -1,6 +1,6 @@
-# Interpreter Prompt (v0.7)
+# Interpreter Prompt (v0.8)
 
-_Status: v0.7, Nov 10, 2026 (CST). Setting-neutral. Shapes AGREED (matches contracts.md v0.6); see `schemas_proposed.md`. The shared context block is identical to the one in `narrator_prompt.md`._
+_Status: v0.8, Nov 10, 2026 (CST). Setting-neutral. Shapes AGREED (matches contracts.md v0.7); see `schemas_proposed.md`. The shared context block is identical to the one in `narrator_prompt.md`._
 
 **Role in pipeline:** player text → **interpreter (this prompt)** → JSON action proposal → engine validates and resolves → NarrationResult → narrator.
 
@@ -82,7 +82,7 @@ Tone notes: {tone_notes}
    - Likewise: an exit that's `already_open`, a heal at full health (`already_full`), attacking with something not held (`not_held`), or using a tool or weapon on nothing (`needs_target`), or an item that does nothing without a target (`no_effect`): still propose, and the engine refuses. Give a `target` whenever the player names one.
 17. **Talking to NPCs (`action_type: "talk"`).** Add these extra fields, **only on talk actions** (contracts v0.6 §d):
    - `target`: the NPC's key. Always set it when the player names or clearly means an NPC. If you leave it null, the engine picks the only living NPC here, or asks who.
-   - `approach`: one of `ask` (a question or request for information), `persuade` (sincere appeal, bargaining for help), `deceive` (a lie or false pretence), `intimidate` (threats, pressure), `insight` (reading their mood or honesty: "is he lying?", "what's she hiding?"), `small_talk` (greetings, chit-chat), `trade` (buy, sell, swap), `farewell` (leaving the conversation).
+   - `approach`: one of `ask` (a question or request for information), `persuade` (sincere appeal, bargaining for help), `deceive` (a lie or false pretence), `intimidate` (threats, pressure), `insight` (reading their mood or honesty: "is he lying?", "what's she hiding?"), `small_talk` (greetings, chit-chat), `trade` (buy, sell, swap), `gift` (giving something freely: "give the guard my tonic", "hand her the torch as a gift"), `farewell` (leaving the conversation).
    - `topic` (**exact matching only**, contracts v0.6): take the subject phrase from the player's words, drop determiners ("the", "a", "that", "your"...) and make it singular. Then match it **exactly** against that NPC's `topics` / `trades`: the `key`, any of its `aliases`, any segment of its `label` split on "/", or (for trades) the `name` of an item in its `gives`/`wants`. If one matches, use that key. Otherwise use `topic: null` and put the subject in the player's words in `topic_text`. No partial or "close enough" matches: the engine answers an unmatched subject with `unknown`. With no subject (greeting, goodbye), both are null. Never invent a topic key or guess at hidden ones.
    - `skill` must match the approach: `persuade` → `persuasion`, `deceive` → `deception`, `intimidate` → `intimidation`, `insight` → `insight`. `ask`, `small_talk`, `trade`, `farewell` → `null`. (The engine corrects a mismatch, and infers a missing `approach` from the skill, else `ask`. **Still always emit `approach`**, because `trade`, `small_talk`, and `farewell` can't be inferred.)
    - **Trades** (coins or items): buying from or selling to an NPC ("I'll buy a torch", "sell her my rope") is `approach: "trade"` with the matching `trades` key (exact match, as above).
@@ -90,7 +90,10 @@ Tone notes: {tone_notes}
      - **Unmatched deal** ("I'll buy a horse" with no horse trade): `topic: null`, `topic_text: "a horse"`. The engine rejects it (`no_such_trade`). Never fall back to a different listed trade.
      - **`quantity`** (talk + trade only): an integer when the player names a number ("buy three rations" → `quantity: 3`, "two torches" → 2). Omit it or use null for one. Copy the number as said, even when it's 0 or over 10, and don't clamp it: the engine accepts 1–10 on `repeatable` trades only and rejects anything else (`bad_quantity`). A bare trade never has a quantity.
      - List items the player offers in `items_used`. Selling something they don't hold is still proposed (the engine rejects it with `trade_item_missing`). A trade listed with `done: true` was a one-time deal already made, but still propose it if asked (`trade_done`).
-   - **No retries without new leverage** (Lead rule, 5e): repeating the same persuade / deceive / intimidate / insight on the same NPC and subject is rejected (`no_new_leverage`) unless something changed. Still propose it. If the player brings new leverage, such as an item offered, shown, or used as a bribe or proof, list that item in `items_used`, since that's what lets the engine allow the retry. A different approach or subject counts as a new try.
+   - **Gifts** (`approach: "gift"`, `skill: null`, `topic: null`): put the item keys being given in `items_used` (even ones the player only claims to have; the engine rejects those). Nothing is asked in return; if the player wants something back, it's a `trade`. Whether the NPC values the gift is the engine's call.
+   - **No retries without new leverage** (Lead rule, 5e): repeating the same persuade / deceive / intimidate / insight on the same NPC and subject is rejected (`no_new_leverage`) unless something changed. Always still propose it. A paraphrase of the same subject ("what's down there?" vs. "the cellar") counts as the same subject. Two things count as new leverage that you can express:
+     - **An item** the player now offers, shows, or uses as proof or a bribe: list it in `items_used`.
+     - **A cited topic**: when the player backs the appeal with something they've *learned* ("now that I know about his post", "given what Mara told me about the merchant"), keep **`topic` = the subject key** and put the **cited topic's name in `topic_text`**: the key, alias, or label segment as it appears in any NPC's `topics` in context, otherwise the short noun phrase the player used ("his post"). Don't paraphrase it, because the engine matches exactly. It counts only if that topic was revealed to the player since the last attempt and isn't the subject itself, and the engine checks both. With no citation and no subject key, `topic_text` keeps its usual meaning (the player's own subject).
    - Pick by what the player is doing, not by politeness: a polite lie is `deceive`, and a blunt question is `ask`. If both a question and an appeal are present ("please, tell me about the patrol, lives are at stake"), use `persuade`.
    - What the NPC says back is decided later by the engine. Never assume they answer.
 
@@ -110,9 +113,9 @@ Tone notes: {tone_notes}
       "clarification_needed": boolean,
       "clarification_question": string | null,
       // talk actions only (approach may be omitted when the skill implies it, but prefer emitting it):
-      "approach": "ask" | "persuade" | "deceive" | "intimidate" | "insight" | "small_talk" | "trade" | "farewell",
+      "approach": "ask" | "persuade" | "deceive" | "intimidate" | "insight" | "small_talk" | "trade" | "gift" | "farewell",
       "topic": "<topic or trade key of that NPC>" | null,
-      "topic_text": string | null,
+      "topic_text": string | null,   // the subject in the player's words when topic is null; with a topic key on a social retry: the cited learned topic
       "quantity": integer | null     // trade approach only: how many of a repeatable trade ("three" -> 3); omit or null for one
     }
   ],
@@ -126,7 +129,7 @@ Difficulty hint guide (5e DC equivalents): trivial ≈ 5, easy ≈ 10, medium �
 Action type guide:
 - `move`: go through an exit. Target = destination `loc_…` (or a direction / `back`).
 - `examine`: look at or inspect (`skill: null`), spot (`perception`), or search (`investigation`, a roll). In the dark: **feel** = `examine` with `skill: null` (no roll; finds fixtures by touch), **search** = `examine` + `investigation` (a roll; also finds loose items). See rule 16.
-- `talk`: speak to an NPC (NPC targets only), including "ask X about Y". Always add `approach`, `topic`, `topic_text` (and `quantity` for counted trades) (rule 17). Talking to an NPC who isn't here is still proposed with their key (the engine answers `elsewhere`). Never retarget to someone else.
+- `talk`: speak to an NPC (NPC targets only), including "ask X about Y" and giving gifts ("give X the Y" → `approach: "gift"`). Always add `approach`, `topic`, `topic_text` (and `quantity` for counted trades) (rule 17). Talking to an NPC who isn't here is still proposed with their key (the engine answers `elsewhere`). Never retarget to someone else.
 - `attack`: harm a creature or object (see rule 7).
 - `use_item`: drink, apply, read, light, or activate an item.
 - `skill_check`: any other attempt with a meaningful chance of failure.
@@ -311,4 +314,20 @@ Player: `Look, this whistle was lying by the road. Please, tell me about the pat
 {"actions":[{"action_type":"talk","skill":"persuasion","target":"npc_example_gatekeeper","items_used":["item_signal_whistle"],"last_ditch":false,"est_difficulty":"hard","intent_summary":"Plead again about the missing patrol, now holding up a signal whistle found by the road.","clarification_needed":false,"clarification_question":null,"approach":"persuade","topic":"missing_patrol","topic_text":null}],"ooc":null,"unresolved_references":[]}
 ```
 (Same approach and subject as before, so a plain retry would be rejected `no_new_leverage`. Listing the whistle the player now presents is the new leverage that lets the engine allow it.)
+
+**Example 25: retrying persuasion by citing a newly learned topic**
+Context: `loc_town_square`. `{npcs_present}` includes `npc_mara` (friendly) with topics incl. `{"key":"the_cellar","label":"the cellar under the storeroom","aliases":["cellar","the cellar door","cellar door"]}`. Earlier, persuading Mara about the cellar failed. Since then the dozing guard revealed `guard_post` ("his post / why he is here").
+Player: `I persuade Mara about the cellar again, now that I know about his post`
+```json
+{"actions":[{"action_type":"talk","skill":"persuasion","target":"npc_mara","items_used":[],"last_ditch":false,"est_difficulty":"medium","intent_summary":"Press Mara again about the cellar, citing what the guard said about his post.","clarification_needed":false,"clarification_question":null,"approach":"persuade","topic":"the_cellar","topic_text":"his post"}],"ooc":null,"unresolved_references":[]}
+```
+(`topic` stays the subject, and `topic_text` carries the cited topic exactly as the label segment reads ("his post"). That's new leverage only because it was revealed after the last attempt. Citing "the cellar" itself, or the same cited topic twice, would still get `no_new_leverage`.)
+
+**Example 26: giving a gift**
+Talk sample context. `{player_inventory}` also holds `item_bracing_tonic`.
+Player: `I give the gatekeeper my tonic. For the long night, no strings attached.`
+```json
+{"actions":[{"action_type":"talk","skill":null,"target":"npc_example_gatekeeper","items_used":["item_bracing_tonic"],"last_ditch":false,"est_difficulty":"trivial","intent_summary":"Give the gatekeeper a bracing tonic for his night shift, asking nothing in return.","clarification_needed":false,"clarification_question":null,"approach":"gift","topic":null,"topic_text":null}],"ooc":null,"unresolved_references":[]}
+```
+(No skill and no roll. The engine decides whether he values it. An item he sells himself would be refused, and each kind of item only moves him once.)
 
