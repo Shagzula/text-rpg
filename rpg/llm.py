@@ -105,7 +105,7 @@ VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("equip", "wield", "wear", "ready", "draw"), "equip"),
     (("unequip", "remove", "sheathe", "unwield"), "unequip"),
     (("attack", "hit", "stab", "strike", "kill", "punch", "slash", "fight"), "attack"),
-    (("use", "drink", "pull", "push", "apply", "light", "eat", "throw", "toss"), "use_item"),
+    (("use", "drink", "pull", "push", "apply", "light", "eat", "throw", "toss", "blow"), "use_item"),
     (("pick", "unlock", "lockpick"), "pick"),
     (("open", "force", "kick", "break", "smash", "bash", "shove"), "force"),
     (("talk", "speak", "ask", "greet", "chat", "say", "hello", "hi", "persuade", "convince", "plead", "beg",
@@ -708,6 +708,8 @@ class MockLLM:
     @staticmethod
     def _consequence_text(c: Dict, context: Dict) -> str:
         t = c["type"]
+        if t == "condition" and c.get("negated_by"):  # v0.7 perk
+            return f"Your {c['negated_by']['name']} takes the worst of it; you shake it off."
         if t == "condition" and c.get("severity") == 0 and not c.get("lasting"):  # a buff
             return f"You feel {c.get('name')}."
         if t == "condition":
@@ -729,6 +731,11 @@ class MockLLM:
                     else f"The {who} shields their eyes in time.")
         if t == "tool_used":
             return f"Your {c.get('name')} makes the work easier."
+        if t == "perk_used":
+            return f"Your {c.get('name')} give you a sure grip." if str(c.get("name", "")).endswith("s") \
+                else f"Your {c.get('name')} helps."
+        if t == "noise_made":
+            return f"The {c.get('name')} shrills, loud enough to carry through the walls."
         if t == "darkness":
             return "It's hard to see in the dark."
         if t == "item_consumed":

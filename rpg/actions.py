@@ -40,6 +40,7 @@ BACK = "back"  # the exit leading to where you came from
 # Ways to get through something locked (an exit, or an item whose state is 'locked').
 LOCK_METHODS = {"sleight_of_hand": "pick_lock", "dex": "pick_lock", "athletics": "force_open", "str": "force_open"}
 TOOL_REQUIRED_METHODS = ("pick_lock",)
+SIGNAL_SUBCATEGORY = "signal"  # v0.7: items_tier1.yaml stats.subcategory; using one makes a noise (whistle)
 IMPROVISED_PICK_TAG = "improvised_pick"  # e.g. a knife: picks a lock at very_hard (25)
 TOOL_METHOD_SKILLS = (("sleight_of_hand", "pick_lock"), ("athletics", "force_open"))  # impossible without a tool that enables it
 TOOL_DC_CAP = {"force_open": DIFFICULTY_DC["hard"]}  # a crowbar turns impossible into hard
@@ -326,13 +327,15 @@ class Turn:
         sk, ab = rules.split_check(skill)
         tools = effects.tool_advantage(effects.available_tools(self.conn, self.cid, a["items_used"]),
                                        sk, method, a["items_used"])
+        perks = effects.perk_advantage(self.conn, self.cid, method, a["items_used"])  # v0.7: e.g. gloves
         dark = sk in effects.DARK_SKILLS and not self.lit
         res = rules.resolve_skill_check(char, skill, dc, last_ditch=a["last_ditch"], roller=self.roller,
-                                        advantage=bool(tools), disadvantage=dark)
-        db.apply_check_consequences(self.conn, self.cid, res)
+                                        advantage=bool(tools or perks), disadvantage=dark)
+        effects.apply_check_consequences(self.conn, self.cid, res)
         res.log_debug(turn=self.turn, action=a["action_type"], intent=a["intent_summary"], method=method,
                       tools=[t["key"] for t in tools], dark=dark)
         self.pending += [{"type": "tool_used", "key": t["key"], "name": t["name"]} for t in tools]
+        self.pending += [{"type": "perk_used", "key": t["key"], "name": t["name"]} for t in perks]
         if dark:
             self.pending.append({"type": "darkness", "description": "hard to see in the dark"})
         if res.roll is not None or res.auto_success:
@@ -435,7 +438,9 @@ class Turn:
             raise Reject("impossible_action", "exit_locked")
         check = None
         if a["skill"]:  # e.g. climbing down: a real check gates the move
-            check = self.check(a, a["skill"], self.dc_for(a, t))
+            # v0.7: an athletics move is a climb (rope / gloves give advantage)
+            method = "climb" if rules.split_check(a["skill"])[0] == "athletics" else None
+            check = self.check(a, a["skill"], self.dc_for(a, t), method=method)
             if not check.success:
                 return self.result(a, target=t, check=check)
         dest = t.row["to_location_id"]
@@ -527,6 +532,7 @@ class Turn:
         danger = effects.hostile_nearby(self.conn, self.loc_id)  # v0.6: no resting next to a hostile either
         if danger:
             raise Reject("impossible_action", danger)
+        effects.reset_rest_perks(self.conn)  # v0.7: once-per-rest perks (leather cap) are ready again
         ch = self.char_row
         cons = []
         ration = next((i for i in inv.list_inventory(self.conn, self.cid)
@@ -641,6 +647,11 @@ class Turn:
             return self.result(a, target={"key": item["key"], "name": item["name"]}, state_changes=[change])
         if effect == "condition":  # thrown at NPCs: flash powder
             return self._use_condition_item(a, t, item)
+        if stats.get("subcategory") == SIGNAL_SUBCATEGORY and not effect:  # v0.7: the signal whistle
+            if item["character_id"] != self.cid:
+                raise Reject("item_not_owned", "not_held")
+            return self.result(a, target={"key": item["key"], "name": item["name"]},
+                               consequences=effects.make_noise(self.conn, self.cid, item))
         check = None
         if isinstance(stats.get("check"), dict):  # e.g. bandages need a medicine check
             spec = stats["check"]
@@ -747,7 +758,7 @@ class Turn:
         helpless = t.kind == "npc" and effects.npc_incapacitated(self.conn, t.row["id"])
         res = rules.resolve_attack(char, ability, dc, proficient=proficient, last_ditch=a["last_ditch"],
                                    roller=self.roller, advantage=bool(helpless))
-        db.apply_check_consequences(self.conn, self.cid, res)
+        effects.apply_check_consequences(self.conn, self.cid, res)
         res.log_debug(turn=self.turn, action="attack", target=t.key, target_condition=helpless or None)
         cons, changes = [], []
         if res.roll is not None:

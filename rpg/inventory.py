@@ -35,9 +35,19 @@ _ITEM_SQL = """SELECT i.*, t.key AS template_key, t.name AS template_name, t.cat
                FROM items i JOIN item_templates t ON t.id = i.template_id"""
 
 
+# v0.7: structured defaults for items whose YAML effect is descriptive only (`use_note`). Keyed by the YAML's
+# own structured fields; any key the template's stats already carry wins.
+SUBCATEGORY_DEFAULTS = {
+    # item_rope (stats.subcategory: climbing): "enables climbing/descending; advantage on athletics climb
+    # checks when anchored" -> a climbing tool: advantage on athletics when climbing or when it's used.
+    "climbing": {"enables": ["climb"], "skill_bonus": {"skill": "athletics", "grants": "advantage"}},
+}
+
+
 def _row_to_item(r) -> Dict:
     d = dict(r)
     d["stats"] = json.loads(d["stats"])
+    d["stats"] = {**SUBCATEGORY_DEFAULTS.get(d["stats"].get("subcategory"), {}), **d["stats"]}
     d["tags"] = json.loads(d["tags"])
     d["name"] = d["display_name"] or d["template_name"]
     d["equipped"] = bool(d["equipped"])

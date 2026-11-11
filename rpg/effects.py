@@ -112,6 +112,83 @@ def tool_advantage(tools: List[Dict], skill: Optional[str], method: Optional[str
 
 
 # ---------------------------------------------------------------------------
+# Equipment perks (v0.7): head / hands / feet house rules
+# ---------------------------------------------------------------------------
+
+# The YAML describes these perks only in `use_note`; a template's own stats.perk (same shape) wins.
+EQUIP_PERKS = {
+    # "negates one 'stunned/dazed by blow to head' consequence per long rest"
+    "item_leather_cap": {"negate_conditions": ["stunned", "dazed"], "per": "rest"},
+    # "advantage on checks to handle hot/sharp/rough objects (climbing rope, thorns)"
+    "item_work_gloves": {"advantage_tags": ["climbing", "sharp", "hot", "rough"], "advantage_methods": ["climb"]},
+    # item_travel_boots: no perk in the YAML ("mostly flavor"; improvised throw only)
+}
+PERK_USED_FLAG = "perk_used:"
+
+
+def perk_of(item: Dict) -> Dict:
+    p = item["stats"].get("perk")
+    return dict(p) if isinstance(p, dict) else dict(EQUIP_PERKS.get(item["template_key"]) or {})
+
+
+def equipped_perks(conn, character_id) -> List[Dict]:
+    """[(item, perk)] for equipped items with a perk."""
+    return [(i, perk_of(i)) for i in inv.list_inventory(conn, character_id) if i["equipped"] and perk_of(i)]
+
+
+def perk_advantage(conn, character_id, method: Optional[str], items_used: List[str]) -> List[Dict]:
+    """Equipped items whose perk gives advantage on this check: the check is one of its methods
+    (e.g. climbing) or an item used carries one of its tags (the rope is `climbing`)."""
+    used_tags = set()
+    for k in items_used:
+        it = inv.get_item(conn, k)
+        if it:
+            used_tags |= set(it["tags"])
+    out = []
+    for item, perk in equipped_perks(conn, character_id):
+        if (method and method in (perk.get("advantage_methods") or [])) or \
+                used_tags & set(perk.get("advantage_tags") or []):
+            out.append(item)
+    return out
+
+
+def perk_negates(conn, character_id, condition_name: str) -> Optional[Dict]:
+    """An equipped item whose perk negates this condition and hasn't been spent since the last rest.
+    Spends it (world flag perk_used:<item>) and returns the item, else None."""
+    for item, perk in equipped_perks(conn, character_id):
+        if condition_name in (perk.get("negate_conditions") or []):
+            flag = PERK_USED_FLAG + item["key"]
+            if not db.get_flag(conn, flag):
+                db.set_flag(conn, flag, True)
+                return item
+    return None
+
+
+def apply_check_consequences(conn, character_id, result):
+    """db.apply_check_consequences with perks: a negated condition is kept in the result with
+    `negated_by: {key, name}` and is not stored."""
+    for c in result.consequences:
+        if c.get("type") == "condition":
+            fields = {k: v for k, v in c.items() if k not in ("type", "id", "negated_by")}
+            out = add_player_condition(conn, character_id, rules.Condition(**fields))
+            c.update(out)
+    return result
+
+
+def reset_rest_perks(conn) -> None:
+    conn.execute("DELETE FROM world_flags WHERE key LIKE ?", (PERK_USED_FLAG + "%",))
+
+
+def add_player_condition(conn, character_id, cond) -> Dict:
+    """Every player condition goes through here: a perk may negate it. Returns
+    {"id": row id} or {"negated_by": {key, name}}."""
+    item = perk_negates(conn, character_id, cond.name)
+    if item is not None:
+        return {"negated_by": {"key": item["key"], "name": item["name"]}}
+    return {"id": db.add_condition(conn, character_id, cond)}
+
+
+# ---------------------------------------------------------------------------
 # Conditions
 # ---------------------------------------------------------------------------
 
@@ -128,6 +205,10 @@ def apply_buff(conn, character_id, item: Dict) -> Dict:
     spec = buff_spec(item)
     s = item["stats"]
     desc = "; ".join(x for x in (s.get("buff"), s.get("side_effect")) if x) or None
+    perk = perk_negates(conn, character_id, spec["name"])
+    if perk is not None:  # v0.7: e.g. a leather cap shrugs off a daze
+        return {"type": "condition", "target": "self", "name": spec["name"], "description": desc, "lasting": False,
+                "severity": 0, "negated_by": {"key": perk["key"], "name": perk["name"]}}
     turns = rules.duration_turns(s.get("duration"))
     conn.execute("DELETE FROM character_conditions WHERE character_id = ? AND name = ?", (character_id, spec["name"]))
     conn.execute("INSERT INTO character_conditions (character_id, name, description, severity, effect, lasting, "
@@ -303,6 +384,43 @@ def hostile_nearby(conn, location_id) -> Optional[str]:
     return None
 
 
+DISTRACTED = "distracted"
+WHISTLED_FLAG = "noise_distracted:"
+
+
+def make_noise(conn, character_id, item: Dict) -> List[Dict]:
+    """v0.7 whistle (YAML: "loud noise audible ~600 ft; can distract"; tag `noisy`). Consequences:
+    `noise_made {key, name, heard_by: [npc keys]}` for every living NPC here or one exit away, then
+    `npc_condition {..., name: "distracted", outcome: "applied"}` for each living, hostile, non-incapacitated
+    NPC here that hasn't been distracted by a noise before (once per NPC per game: they won't fall for it
+    twice). Distracted (1 turn, effect {attack_disadvantage: true}): its next attack rolls at disadvantage."""
+    loc = conn.execute("SELECT location_id FROM characters WHERE id = ?", (character_id,)).fetchone()[0]
+    rooms = [loc] + [r[0] for r in conn.execute(
+        "SELECT DISTINCT to_location_id FROM location_exits WHERE from_location_id = ?", (loc,))]
+    heard = []
+    for lid in rooms:
+        heard += [r["key"] for r in conn.execute("SELECT key FROM npcs WHERE location_id = ? AND alive = 1 "
+                                                  "ORDER BY id", (lid,))]
+    out = [{"type": "noise_made", "key": item["key"], "name": item["name"], "heard_by": heard}]
+    for n in conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id", (loc,)).fetchall():
+        if rules.disposition_band(n["disposition"]) != "hostile" or npc_incapacitated(conn, n["id"]):
+            continue
+        if db.get_flag(conn, WHISTLED_FLAG + n["key"]):
+            continue
+        db.set_flag(conn, WHISTLED_FLAG + n["key"], True)
+        conn.execute("DELETE FROM npc_conditions WHERE npc_id = ? AND name = ?", (n["id"], DISTRACTED))
+        conn.execute("INSERT INTO npc_conditions (npc_id, name, effect, duration_turns, source) VALUES (?, ?, ?, 1, ?)",
+                     (n["id"], DISTRACTED, json.dumps({"attack_disadvantage": True}), item["key"]))
+        out.append({"type": "npc_condition", "key": n["key"], "npc_name": n["name"], "name": DISTRACTED,
+                    "outcome": "applied"})
+    return out
+
+
+def npc_attack_disadvantage(conn, npc_id) -> bool:
+    return any(json.loads(r[0] or "{}").get("attack_disadvantage")
+               for r in conn.execute("SELECT effect FROM npc_conditions WHERE npc_id = ?", (npc_id,)))
+
+
 def npc_phase(conn, character_id, rng: random.Random, turn: int, skip=()) -> List[Dict]:
     """Every hostile, alive, reachable NPC in the player's location attacks once:
     d20 + attack_bonus vs the player's defense; a hit deals its damage dice (min 1).
@@ -324,6 +442,8 @@ def npc_phase(conn, character_id, rng: random.Random, turn: int, skip=()) -> Lis
                         "hp_band": rules.hp_band(hp, ch["max_hp"])})
             continue
         roll = rng.randint(1, 20)
+        if npc_attack_disadvantage(conn, n["id"]):  # v0.7: e.g. distracted by a whistle
+            roll = min(roll, rng.randint(1, 20))
         total = roll + n["attack_bonus"]
         hit = total >= defense
         margin = total - defense
