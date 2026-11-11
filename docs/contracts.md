@@ -1,4 +1,4 @@
-# JSON contracts (v0.5)
+# JSON contracts (v0.6)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -6,7 +6,10 @@ Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/co
 `/home/box/rpg-project/content/` (`schemas_proposed.md`, `interpreter_prompt.md`, `narrator_prompt.md`).
 Where v0.2 differed, the content drafts won (see "Changes since ..." at the end). v0.5 accepts the
 PROPOSED talk drafts (`schemas_proposed.md` §d-§g, `npc_persona_schema.md`, `npc_voice_prompt.md`) as
-implemented, with the deviations listed in section (d).
+implemented, with the deviations listed in section (d). v0.6 adds the fixes from retest 9127044 and the
+Project Lead's decisions of 2026-11-10 (marked **DECIDED**); see "Changes since v0.5". The Story Designer's
+content is vendored into `code/content/` (source of truth stays `/home/box/rpg-project/content/`; a drift
+test fails when they differ, `tools/check_content_drift.py --sync` re-copies).
 
 Pipeline: player text -> **interpreter** -> action proposal (a) -> `process_action_proposal(conn,
 character_id, proposal, rng=None)` -> engine result (b) -> **narrator** -> prose ending "What do you do?".
@@ -61,13 +64,17 @@ Principles
   `description` is replaced by "It is pitch dark; you can see nothing.", `visible_items` is `[]`, and every
   NPC has `visible: false` (still listed: you can hear them, and hostile ones still attack). Exits stay listed.
 - `exits[].lockable` = it has an authored `unlock_dc` (so "the lock" can mean it even after it's opened).
-- v0.5 `felt_items`: when `dark && !lit`, the fixtures here (`[{key, name, fixture: true}]`, e.g. a lever)
-  that can be found and used by touch (not examined). `[]` otherwise. Interpreters should match names against
-  these before falling back to inventory items.
+- v0.5 `felt_items`: when `dark && !lit`, the fixtures here (`[{key, name, fixture}]`, e.g. a lever)
+  that can be found and used by touch. v0.6: once a dark search of this place has succeeded (world flag
+  `searched_dark:<loc>`), loose reachable items are listed too (`fixture: false`, e.g. a rope); never
+  out-of-reach things. `[]` otherwise. Interpreters should match names against these before falling back to
+  inventory items.
 - `npcs_present[].conditions`: NPC condition names (e.g. `blinded`); `player_inventory[].state` shows `lit`.
 - v0.5 `npcs_present[].topics`: every public `knowledge` topic of the NPC's persona, plus `secrets` whose
   `min_band` <= the current band (`[{key, label}]`, never text). `trades`: trades listed in `reveal_by_band`
-  at or below the current band, minus completed one-off trades (`[{key, label}]`). `recent_dialogue`: the
+  at or below the current band (`[{key, label}]`). v0.6: topics/trades carry optional `aliases`; open trades
+  carry `gives`/`wants` (priced, as in the trade block); completed one-off trades stay listed with
+  `done: true` (so "buy it again" gets `trade_done`, not `no_such_trade`). `recent_dialogue`: the
   last 5 lines this NPC said (`npc_dialogue_log`), oldest first. Persona-less or defeated NPCs: `[]`.
   Secret text, `never` secrets, `insight_tell` and the disposition integer never appear.
 - v0.5 `player_sheet.gold`: the purse, an integer coin count in the same unit as `item_templates.value`.
@@ -182,7 +189,7 @@ Nothing changes in the DB and no turn is spent.
 | `outcome` | `success`, `failure`, `clarify`. Rejected actions are `failure`. |
 | `degree` | `narrow` (margin 0-4), `clear` (5-9), `overwhelming` (10+). The same bands apply to success and failure. **null whenever nothing was rolled** (auto-success, impossible, no_check, rejected, clarify). |
 | `reason` | Check: `auto_success`, `rolled`, `last_ditch`, `impossible`, `impossible_even_last_ditch`. Validation: `item_not_owned`, `target_not_present`, `item_unusable`, `out_of_reach`, `impossible_action`. Other: `clarify`, `no_check`. |
-| `detail` | Only on rejections. Machine-readable hint for the narrator or logs: `no_such_item`, `elsewhere`, `no_exit`, `unknown_key`, `exit_locked`, `already_here`, `not_an_exit`, `fixture`, `already_held`, `not_equippable`, `not_equipped`, `slot_occupied`, `target_defeated`, `not_a_creature`, `not_attackable`, `self`, `enemies_present`, `lacks_ability`, `no_item`, `no_target`, `no_destination`; new in v0.5: `needs_target`, `no_effect`; new in v0.4: `unrecognized`, `too_dark`, `needs_tool`, `already_open`, `already_full`, `not_held`, `light_not_held`, `no_way_back`. |
+| `detail` | Only on rejections. Machine-readable hint for the narrator or logs: `no_such_item`, `elsewhere`, `no_exit`, `unknown_key`, `exit_locked`, `already_here`, `not_an_exit`, `fixture`, `already_held`, `not_equippable`, `not_equipped`, `slot_occupied`, `target_defeated`, `not_a_creature`, `not_attackable`, `self`, `enemies_present`, `lacks_ability`, `no_item`, `no_target`, `no_destination`; new in v0.6: `no_new_leverage`, `no_such_trade`, `trade_done`, `trade_item_missing`, `bad_quantity`, `hostile_nearby`; new in v0.5: `needs_target`, `no_effect`; new in v0.4: `unrecognized`, `too_dark`, `needs_tool`, `already_open`, `already_full`, `not_held`, `light_not_held`, `no_way_back`. |
 | `skill`, `ability` | Set only when a check or attack was resolved. Attacks have `skill: null`. |
 | `auto_success`, `impossible`, `last_ditch` | Booleans from the check. They are false when there was no check. |
 | `target` | `{key, name}` (`examine` adds `description`). `"self"` -> `{"key": "self", "name": "you"}`. |
@@ -194,10 +201,12 @@ Nothing changes in the DB and no turn is spent.
 | `target_not_present` | The target key is unknown, is somewhere else, or names a location with no exit from here. `take` of an item not here. |
 | `item_unusable` | Taking a `fixture` or an item already held, equipping a slot-`none` item, unequipping something not equipped, a healing item at full HP (`already_full`; nothing is spent). |
 | `out_of_reach` | The item or NPC has `out_of_reach` set: no take, use or melee. Ranged and thrown weapons can still hit it, and it can still be examined. |
-| `impossible_action` | Categorical: moving through a locked exit, `move` to a non-exit, attacking yourself or a defeated NPC, talking to a non-creature or a defeated NPC, resting with a hostile NPC present, **any `action_type: "other"` with `skill: null`** (`lacks_ability` if `near_impossible`, else `unrecognized`: the engine has nothing to model, so it is never a free success), examining something not held in the dark (`too_dark`), picking a lock without a lock tool (`needs_tool`), picking/forcing an exit that is already open (`already_open`), v0.5: using a tool or weapon on nothing /
+| `impossible_action` | Categorical: moving through a locked exit, `move` to a non-exit, attacking yourself or a defeated NPC, talking to a non-creature or a defeated NPC, resting with a hostile NPC present (`enemies_present`) or, v0.6 **DECIDED**, in a room connected to this one by any exit (`hostile_nearby`), v0.6 talk rejections (see (d)), **any `action_type: "other"` with `skill: null`** (`lacks_ability` if `near_impossible`, else `unrecognized`: the engine has nothing to model, so it is never a free success), examining something not held and not felt in the dark (`too_dark`), picking a lock without a lock tool (`needs_tool`), picking/forcing an exit that is already open (`already_open`), v0.5: using a tool or weapon on nothing /
 yourself (`needs_target`) or an item with no effect on nothing (`no_effect`). |
 
-`talk` with no target is `target_not_present` / `no_target`.
+`talk` with no target is `target_not_present` / `no_target`. v0.6: `talk` to an NPC key that exists but is
+elsewhere is `target_not_present` / `elsewhere` (never retargeted to whoever is here; the mock narrates
+"Mara isn't here."). No time passes outside combat.
 
 ### Clarify
 Triggered by a non-empty `unresolved_references` or by `clarification_needed: true` on an action.
@@ -217,7 +226,11 @@ only what is sent) and listed in an optional top-level
 `"skipped": [{"action_type", "intent_summary", "reason": "prior_failure" | "prior_clarify"}]` for logs and the CLI.
 
 ### Time passing
-A turn **spends time only if at least one action resolved** (`time_passed: true`). Then, after the
+A turn **spends time only if at least one action resolved** (`time_passed: true`), or, v0.6 **DECIDED**
+(combat stalling), **if a living hostile NPC was in the player's room at the start of the turn and at least
+one action was rejected**: a wasted round (`wasted_round: true` at top level; time passes, hostiles act,
+timers tick, the turn counter advances). Clarify turns, malformed proposals (re-prompt errors) and OOC input
+never cost time, in or out of combat. Outside combat the rules below are unchanged. Then, after the
 player's actions: NPC conditions tick (skipping ones applied this turn), the NPC phase runs
 (`npc_actions`), then player conditions and lights tick (`expired` lists both, in that order). If every action was
 rejected or clarifies, nothing else happens: the turn counter is handed back, no dice are rolled, no NPC
@@ -269,7 +282,7 @@ The narrator sees none of this as numbers; a `tool_used {key, name}` or `darknes
 | action | engine behaviour |
 |---|---|
 | `move` | The target must be an exit from here (a `loc_` key or a direction / `back`) and not locked. With a `skill` (e.g. climbing) a check gates it. Changes: `moved_to_location {key, name, dark}` (`dark: true` = arrived somewhere pitch dark; the narrator says so and lists the exits from context), and on the first visit `flag_set visited:<loc>`. The engine remembers the previous location for `back` (flag `last_location:<character id>`). |
-| `examine` | `no_check`; with a `skill`, a check. Fixtures and out-of-reach things can be examined. In the dark (`dark && !lit`) only held items, yourself and **the room itself** (`target` null or the current `loc_`; the result's `target.description` is the darkness text, v0.5) can be examined without a skill; anything else is `too_dark`. Searching with a skill is allowed, at disadvantage. |
+| `examine` | `no_check`; with a `skill`, a check. Fixtures and out-of-reach things can be examined. In the dark (`dark && !lit`) only held items, yourself and **the room itself** (`target` null or the current `loc_`; the result's `target.description` is the darkness text, v0.5) can be examined without a skill; v0.6: so can anything in `felt_items` (by touch, `target.description` "You find it by touch in the dark: the X."), and examining the room adds `felt` (the felt items). Anything else is `too_dark`. Searching with a skill is allowed, at disadvantage; v0.6: success sets `searched_dark:<loc>` and `felt` includes loose items. |
 | `talk` | NPC target only. `no_check`; with a social `skill`, a check vs the hinted DC. `dialogue` stays `[]` until dialogue generation is decided. |
 | `skill_check` / `other` (+skill) | A check. On a locked exit / locked item with a lock method (see Tools) success -> `exit_state {key, direction, from: "locked", to: "open"}` (both sides unlocked) or `entity_state {key, field: "state", from: "locked", to: "open"}`. Other skills on a locked exit roll but never unlock it. |
 | `attack` | Check vs the target's defense DC. Ability: unarmed STR; a `finesse` weapon uses the better of STR and DEX; `ammunition` or ranged non-thrown uses DEX; otherwise STR. An improvised (non-weapon) item uses the str/dex hint. + PB if proficient (unarmed always; a weapon if `stats.proficiency` or its template key is in the character's `weapon_proficiencies`; improvised never). No auto-success. On a hit vs an NPC, damage = weapon dice (improvised `1d4`, unarmed `1`) + ability mod, min 1 -> `damage_dealt {target, hp_band}`; at 0 HP `npc_defeated` + `flag_set defeated:<npc>`. A surviving attacked NPC turns hostile -> `npc_disposition_changed {key, to: "hostile"}` (and so counterattacks in the same turn's NPC phase). A hit on an object -> `entity_state {key, field: "state", from, to: "damaged"}`. You attack only with held items. |
@@ -297,6 +310,14 @@ State change types: `moved_to_location`, `exit_state`, `item_added`, `item_remov
 | `item_rations` | `effect: sustenance` | Eaten on `rest` for a full heal (see `rest`). Eating outside a rest just spends it. |
 | `item_lockpicks`, `item_crowbar`, `item_healers_kit` | `enables`, `skill_bonus` | See Tools. `grants: required_for_check` (lockpicks) adds no bonus; the requirement is enforced through `enables: pick_lock`. |
 
+### Pursuit (v0.6, **DECIDED**)
+On a turn that spent time, if the player ended in a different room from where they started, every NPC in
+the starting room that is alive, `hostile`, not `out_of_reach`, not incapacitated and has no world flag
+`pursued:<npc_key>` moves to the player's room, gets that flag, and is reported in `npc_actions` as
+`{npc, name, action: "follow", outcome: null, degree: null, hp_band}`. Following is its action that turn
+(no attack until the next turn). It pursues **once** per game: after that it stays where it is. Runs after
+NPC conditions tick and before the NPC phase; works in the dark (no sight needed).
+
 ### NPC phase (counterattacks)
 After the player's actions on a turn that spent time, each NPC in the player's location (in id order) that
 is alive, `hostile`, and not `out_of_reach` acts once. If it has an incapacitating condition it does
@@ -312,7 +333,7 @@ margin bands. The phase stops as soon as the player is at HP <= 0. NPC columns (
 no body armor: 10 + DEX mod. Plus every other equipped item's `ac_bonus` (shields, accessories). The
 premade (DEX 14, no armor) has 12.
 
-`npc_actions[]` entry: `{npc, name, action: "attack" | "none", outcome: "success" | "failure" | null,
+`npc_actions[]` entry: `{npc, name, action: "attack" | "none" | "follow", outcome: "success" | "failure" | null,
 degree, hp_band}` (`reason` on `none`). `hp_band` is the **player's** band after that action. No numbers;
 rolls and damage go to `rpg.debug`.
 
@@ -331,6 +352,7 @@ name}`, `light_burnt_out {key, name}`.
 | `defeat` | null, or `{"type": "death", "description": ...}` when the player's HP is <= 0 (`down`). A dead player's later proposals resolve nothing and return `defeat` again. The narrator must **not** end a defeat narration with "What do you do?" (the post-processor strips it); the CLI follows with its provisional death policy (`rpg.cli.death_policy`): load the most recent save slot, start a new game, or quit. (`knocked_out`/`captured`: reserved.) |
 | `clarification_question` | Set on clarify turns. |
 | `skipped` | Optional, see above. |
+| `wasted_round` | v0.6, optional: `true` when time passed only because a rejected action was a wasted round in combat. |
 
 ## (c) Item template (content data -> `item_templates`)
 
@@ -389,6 +411,15 @@ when `topic` is null). `validate_proposal()` keeps them; non-talk actions never 
   `intimidate` -> `intimidation`, `insight` -> `insight`; others -> null (agreed with the Project Lead).
 - A missing `approach` is inferred from the skill (else `ask`); an unknown value is a re-prompt error.
   `topic`/`topic_text` must be string or null.
+- v0.6 `quantity` (int or null, not bool; anything else is a re-prompt error): how many times to make a
+  `repeatable` trade. The engine requires 1..10 (`MAX_TRADE_QTY`); 0, negatives, >10, a quantity > 1 on a
+  one-off trade, or a quantity on a bare trade -> `impossible_action` / `bad_quantity`. Gold and items are
+  multiplied; the trade block gets `quantity` when > 1.
+- v0.6 **topic matching** (interpreter side, the mock implements it): `topic` must be an exact topic/trade key
+  or one of its `aliases` / label segments (split on "/") / item names in its gives/wants, after stripping
+  determiners and singularising. No substring matching. Anything else -> `topic: null` with `topic_text`
+  (engine answers `unknown`). Personas may give `aliases: [strings]` on knowledge, secrets and trades
+  (engine extension; secret aliases are only listed once the secret is visible).
 - A talk with no target: exactly one living NPC here -> that NPC; several -> clarify ("Who do you want to
   talk to: ...?"); none -> `target_not_present` / `no_target`.
 
@@ -410,6 +441,16 @@ when `topic` is null). `validate_proposal()` keeps them; non-talk actions never 
   not visible at the band, a `never` secret, or a key the NPC doesn't have -> `unknown` (so a hidden
   secret's existence is never confirmed). No subject (`topic` and `topic_text` null, or small_talk /
   farewell) -> `none`.
+- v0.6 **DECIDED** (Lead, 2026-11-10) **no-retry rule** (5e: you can't retry a social check without new
+  leverage): every paired approach (persuade/deceive/intimidate/insight) on an NPC records world flag
+  `social_try:<npc>:<approach>:<subject>` (subject = topic key, else lowercased `topic_text`, else empty)
+  with `{turn, disposition, items}`. Repeating the same NPC+approach+subject is rejected
+  `impossible_action` / `no_new_leverage` (no roll, no time outside combat) unless at least 10 turns have
+  passed (`RETRY_TURNS`), the NPC's disposition changed since, or `items_used` includes something not used
+  before. A different approach or subject is a new try.
+- v0.6 **DECIDED** **social cap at friendly**: a positive disposition change from a social check (persuade,
+  deceive) never takes the NPC above 49 (top of `friendly`); `allied` is only reachable by other means
+  (quests, story events; trades' +2 is not a social check). An NPC already above 49 is never lowered by it.
 - `insight` success -> `insight_read` = the persona's `insight_tell` (narrator only; the voice step never
   sees it).
 
@@ -434,10 +475,15 @@ Field meanings as in `schemas_proposed.md` §f. Persona-less NPC: the block is p
   base x {hostile 1.5, unfriendly 1.25, neutral 1.0, friendly 0.9, allied 0.75}, rounded **up**, min 1; the
   player receives (`gives`) base x {hostile 0.5, unfriendly 0.75, neutral 1.0, friendly 1.1, allied 1.25},
   rounded **down**, min 1. (Hostile normally has no trades listed.) Item entries aren't scaled.
-- `approach: trade` + `topic` null -> `offered`: the first open trade involving a template in `items_used`,
-  else the first open trade; `refused` (key/label null) if none.
+- v0.6: `approach: trade` + `topic` null and no `topic_text` -> `offered` with `key/label: null`,
+  `gives/wants: []` and `options: [trade entries]` listing every open trade (the NPC names them); `refused`
+  if none. **Never falls back to the first listing.** `topic` null with `topic_text` (an unmatched deal) ->
+  `impossible_action` / `no_such_trade`; `topic` not a trade key on a trade approach -> `no_such_trade`;
+  a completed one-off -> `trade_done`; wanted items not held (x quantity) -> `item_not_owned` /
+  `trade_item_missing` (e.g. selling rope you don't have). These rejections don't spend time outside combat.
 - `topic` = a trade key (any approach) -> `completed` if open at the band and the player holds every wanted
-  item (by template, summed across stacks) and has the coins; else `unaffordable`. A trade not open at the
+  item (by template, summed across stacks) and has the coins; short of coins -> `unaffordable` (v0.6: missing
+  items are the `trade_item_missing` rejection above). A trade not open at the
   band -> `refused` (its label only if the trade is listed at or below the band; a higher-band trade comes
   back with `label: null`). Non-`repeatable` trades complete once (`world_flags` `trade_done:<npc>:<trade>`).
 - **Completion** is engine-owned: wanted items are removed (`item_removed`), coins move
@@ -467,6 +513,33 @@ falls back to indirect speech).
 6. Context `topics` lists all public knowledge (§d), not only the band's `reveal_by_band` topics; asking
    about one not yet available gives `refused`.
 7. Demo personas live in `code/rpg/data/npcs/` (engine-owned), not in `content/`.
+8. v0.6: optional `aliases` on persona topics/secrets/trades; trade `quantity`; bare trade `options`.
+9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
+   untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
+   and checks `validate_proposal`'s error tuple (the original's dict check never matched).
+
+## Changes since v0.5
+Retest of 9127044 (`playtest/2026-11-10-retest-9127044.md`):
+1. Content vendored into `code/content/` + drift test + vendored validator run in tests; a clean worktree
+   runs with 0 skips.
+2. R2-01: talking to an absent NPC -> `target_not_present` / `elsewhere`, no retargeting, no time;
+   "ask X about Y" is a talk.
+3. R2-02/03/04: trades never fall back to the first listing (`no_such_trade`, `trade_item_missing`,
+   `trade_done`), bare trade lists `options`, `quantity` 1..10 (`bad_quantity`).
+4. R2-05: dark touch path. "feel for the lever" / "feel around" = examine with no skill (no roll): a felt
+   item is examined by touch, the room by touch lists `felt` (`result.felt` = felt items). "search" /
+   "rummage" = investigation at disadvantage; success sets `searched_dark:<loc>` and reveals loose items
+   (`felt`), which stay in `felt_items`. (Replaces the v0.5 rule that a felt fixture is `too_dark` to
+   examine.)
+5. R2-06: topic matching is exact keys/aliases only; persona `aliases`.
+6. R2-07: low fixes (see the report).
+Project Lead decisions (**DECIDED**, not provisional):
+7. 5e no-retry rule (`no_new_leverage`) and social cap at friendly (49), section (d).
+8. Combat stalling: a rejected action with a living hostile in the room is a wasted round
+   (`wasted_round`); outside combat rejections stay free; clarify/malformed/OOC never cost time.
+9. No rest with a hostile in the same room (`enemies_present`) or an adjacent connected room
+   (`hostile_nearby`). Pursuit: a fled-from hostile follows once (`pursued:<npc>`, `npc_actions` `follow`),
+   also in the dark. Guard stats unchanged (DC 11, HP 12, +3, 1d6, save +1).
 
 ## Changes since v0.4
 1. Talk accepted (section (d)): talk action fields, persona social DCs, disposition deltas, topics,

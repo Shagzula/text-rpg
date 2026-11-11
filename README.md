@@ -39,7 +39,10 @@ Talk: `talk to mara`, `ask mara about the cellar`, `persuade mara about ...`, `l
 `buy a torch from mara`, `sell rope to mara`. Bare `talk` talks to the only person here (or asks which).
 Directions: `north`...`southwest`, `up`, `down`, `in`, `out`, and `n s e w ne nw se sw u d`, alone or after
 `go`/`walk`/`head`/`climb`. Input over 300 characters is refused without spending a turn.
-Anything the engine can't model ("cast fireball", "xyzzy") is answered "Nothing happens" and costs no turn.
+Anything the engine can't model ("cast fireball", "xyzzy") is answered "Nothing happens" and costs no turn,
+except in combat: with a hostile NPC in your room any refused action is a wasted round and it gets to act.
+In the dark, `feel around` / `feel for the lever` find things by touch (no roll); `search` rolls
+investigation and, on a success, finds loose items too.
 Meta commands: `/save [name]`, `/load [name]`, `/saves`, `/stats`, `/debug` (show hidden check numbers),
 `/help`, `/quit`. Typing `quit`, `save` or `help` without the slash works too.
 
@@ -48,16 +51,20 @@ lamp, flash powder, locked iron-banded door, DC 15) -> down -> Cellar (**dark**:
 rope, a lever that sets a flag). You start with a shortsword, boots, a healing draught, lockpicks, a torch,
 rations and a purse of 60 coins (`/stats` shows it).
 
-**Talk** (contracts v0.5 §d): NPCs with a persona (`rpg/data/npcs/*.yaml`) have topics they'll share at
+**Talk** (contracts v0.6 §d): NPCs with a persona (`rpg/data/npcs/*.yaml`) have topics they'll share at
 their current disposition band, secrets they share only when they like you enough (or never), and trades
 priced in coins by band. Persuading, lying and intimidating roll against the persona's social DC and move
 disposition; the engine decides what may be said, and a separate `voice_npc` LLM call only phrases it
 (the mock has a deterministic voice). If the voice call fails, the narrator reports the facts indirectly.
+You can't retry the same persuasion/lie/threat on the same subject without new leverage (10 turns, a
+changed attitude, or a new item), and talking someone up stops at friendly. `trade` alone lists the deals;
+`buy 3 torches` trades a repeatable deal up to 10 times.
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
 your defense = 10 + DEX mod, or armor `base_ac` + capped DEX, plus shield bonus). The guard (defense 11,
 12 HP, +3, 1d6) is a real fight for the 10-HP premade (defense 12). Rest heals half your missing HP, or
-to full if you carry rations (one is eaten); it's blocked while a hostile NPC is present.
+to full if you carry rations (one is eaten); it's blocked while a hostile NPC is here or in a room next
+door. Flee and a hostile follows you once into the next room, then stays there (even in the dark).
 
 **Death** (provisional, `rpg/cli.py: death_policy`): at 0 HP the run ends after the narration and you
 choose: load your most recent save slot, start a new game, or quit. Continuing a dead working save goes
@@ -114,8 +121,13 @@ python3 rpg_engine.py [db_path] [seed]                   # engine JSON demo (thr
 - **Conditions don't stack**: re-applying one you have keeps a single row (the stronger effect wins).
   Timed conditions and lit lights tick down each turn that spends time.
 
+## Content
+`content/` is a vendored copy of the Story Designer's `/home/box/rpg-project/content/` (the source of truth;
+don't edit either from here). `tests/test_vendored_content.py` runs `tools/validate_content.py` and fails
+if the copy drifts; `python3 tools/check_content_drift.py --sync` re-copies.
+
 ## Turn API
-See `docs/contracts.md` (v0.5) for the proposal and result shapes, validation codes, DC rules and
+See `docs/contracts.md` (v0.6) for the proposal and result shapes, validation codes, DC rules and
 state changes. `process_action_proposal` writes through the connection you pass and does not commit:
 ```python
 from rpg import db
