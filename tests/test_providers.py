@@ -101,7 +101,7 @@ def test_anthropic_interpret_request_shape(monkeypatch, world):
     assert b["model"] == "claude-haiku-5-5" and b["max_tokens"] > 0
     assert b["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert b["output_config"]["format"] == {"type": "json_schema", "schema": proposal_schema()}
-    assert b["messages"][0]["role"] == "user" and "### Player's input this turn\nlook around" in b["messages"][0]["content"]
+    assert b["messages"][0]["role"] == "user" and "### Player's input this turn" in b["messages"][0]["content"] and "<player_input>\nlook around\n</player_input>" in b["messages"][0]["content"]
     assert not {"temperature", "top_p", "top_k"} & set(b)
 
 
@@ -116,7 +116,7 @@ def test_narrate_uses_the_stronger_model_and_no_schema(monkeypatch, world, name)
     assert "text" not in b and "format" not in b.get("output_config", {})
     blob = json.dumps(b)
     assert "### NarrationResult (JSON, authoritative)" in blob and '\\"turn\\":1' in blob
-    assert "### Player's input this turn\\nlook" in blob
+    assert "### Player's input this turn" in blob and "<player_input>\\nlook\\n</player_input>" in blob
 
 
 @both
@@ -146,7 +146,8 @@ def test_prompts_come_from_vendored_content(world):
     assert "## Output schema" in system and "## Context for this turn" in system
     assert "{npcs_present}" not in user and json.dumps(ctx["npcs_present"], ensure_ascii=False,
                                                        separators=(",", ":")) in user
-    assert user.rstrip().endswith("go {north}")  # player text is inserted verbatim, never re-filled
+    assert "<player_input>\ngo {north}\n</player_input>" in user  # verbatim, never re-filled; fenced
+    assert user.rstrip().endswith("</player_input>")
     assert "{player_inventory}" in system  # placeholders in rules/examples are references, untouched
     for kind in prompts.FILES:
         s, sec = prompts.template(kind)

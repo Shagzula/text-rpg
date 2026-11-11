@@ -173,6 +173,36 @@ UNSEEN_WORDS = "unseen figure someone something somebody whoever noise sound voi
 GENERIC_SOUND = "something breathing nearby"  # = unseen.GENERIC_SOUND
 
 
+def npc_ref(name: Optional[str], article: Optional[str] = None, *, cap: bool = False) -> str:
+    """How to mention an NPC in mock narration.
+
+    A proper name (a single capitalized word such as Mara) takes no article.
+    Multi-word or lowercase names take 'the' (the Dozing Guard, the unseen figure).
+    A name that already starts with a/an/the is left alone ('a voice in the dark').
+    Optional `article` ('' / 'the' / 'a' / 'an') overrides the rule if a persona sets one.
+    """
+    name = name or "foe"
+    low = name.lower()
+    if low.startswith(("a ", "an ", "the ")):
+        phrase = name
+    elif article is not None:
+        phrase = f"{article} {name}".strip() if article else name
+    elif " " not in name and name[:1].isupper():
+        phrase = name
+    else:
+        phrase = f"the {name}"
+    if cap and phrase:
+        return phrase[0].upper() + phrase[1:]
+    return phrase
+
+
+def unseen_display_name(npc: Optional[Dict], fallback: str = "them") -> str:
+    """A name taken from a context NPC entry. Unseen entries have no 'name' (BUG-R5-01)."""
+    if not npc:
+        return fallback
+    return npc.get("name") or "unseen figure"
+
+
 class MockLLM:
     """Deterministic keyword interpreter and templated narrator for offline play and tests."""
 
@@ -347,8 +377,8 @@ class MockLLM:
                 refs.append(subject)
             action.update(action_type="talk", skill=None, est_difficulty="medium", approach="gift", topic=None,
                           topic_text=None, items_used=[ikey] if ikey else [])
-            nm = npc["name"] if npc else (npc_txt or "them")
-            action["intent_summary"] = (f"Give the {subject} to " + (nm if " " not in nm else f"the {nm}") + ".")
+            nm = unseen_display_name(npc, npc_txt or "them")
+            action["intent_summary"] = f"Give the {subject} to {npc_ref(nm)}."
             return
         if approach in ("persuade", "deceive", "intimidate", "insight") and subject:
             m = CITE_RE.search(subject)
@@ -379,7 +409,7 @@ class MockLLM:
             topic_text = cite
         if offered:
             action["items_used"] = offered
-        name = (npc.get("name") or "someone in the dark") if npc else (npc_txt or "them")
+        name = unseen_display_name(npc, npc_txt or "them")
         about = f" about {subject if cite else (topic_text or subject)}" if (topic_text or subject) and \
             approach != "trade" else \
             (f" for {subject}" if subject else "")
@@ -387,8 +417,8 @@ class MockLLM:
             action["quantity"] = quantity
         action.update(action_type="talk", skill=TALK_SKILL.get(approach), est_difficulty="medium",
                       approach=approach, topic=topic, topic_text=topic_text,
-                      intent_summary=TALK_SUMMARY[approach].replace("the {npc}", "{npc}" if " " not in name
-                                                                    else "the {npc}").format(npc=name, about=about[:60]))
+                      intent_summary=TALK_SUMMARY[approach].replace("the {npc}", "{npc}")
+                      .format(npc=npc_ref(name), about=about[:60]))
 
     def _door_target(self, phrase: str, context: Dict, pools):
         """Match a door-ish phrase; "the door"/"the lock" prefers the one locked exit, then
@@ -527,19 +557,19 @@ class MockLLM:
                  "down": "You crumple to the ground."}
 
     def _npc_action_text(self, a: Dict) -> str:
-        name = a.get("name") or "foe"
+        who = npc_ref(a.get("name") or "foe", a.get("article"), cap=True)
         if a.get("action") == "follow":
-            return f"The {name} comes after you!"
+            return f"{who} comes after you!"
         if a.get("action") == "none":
-            return f"The {name} flails about, {a.get('reason') or 'helpless'}, and can't find you."
+            return f"{who} flails about, {a.get('reason') or 'helpless'}, and can't find you."
         if a.get("outcome") == "success":
             how = {"narrow": " a glancing blow", "clear": "", "overwhelming": " a brutal blow"}.get(a.get("degree"), "")
-            lead = f"The {name} lands{how} on you." if how else f"The {name} hits you."
+            lead = f"{who} lands{how} on you." if how else f"{who} hits you."
             daze = {"applied": " Your head rings; you're dazed.",
                     "negated": f" Your {(a.get('negated_by') or {}).get('name', 'gear')} takes the worst of it."
                     }.get(a.get("dazed"), "")
             return f"{lead} {self.HURT_TEXT.get(a.get('hp_band'), '')}".strip() + daze
-        return f"The {name} attacks, but you avoid the blow."
+        return f"{who} attacks, but you avoid the blow."
 
     @staticmethod
     def _expired_text(e: Dict) -> str:
@@ -547,7 +577,7 @@ class MockLLM:
         if t == "condition_expired":
             return f"The feeling of being {e.get('name')} fades."
         if t == "npc_condition_expired":
-            return f"The {e.get('npc_name')} is no longer {e.get('name')}."
+            return f"{npc_ref(e.get('npc_name'), cap=True)} is no longer {e.get('name')}."
         if t == "light_burnt_out":
             return f"Your {e.get('name')} gutters and goes out."
         return ""
@@ -653,8 +683,8 @@ class MockLLM:
         elif at == "wait":
             out.append("You wait. Time passes.")
         elif at == "attack":
-            out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on the {tname}." if ok
-                       else f"{self.FAIL_WORD[r['degree']]}the {tname} avoids your attack.")
+            out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on {npc_ref(tname)}." if ok
+                       else f"{self.FAIL_WORD[r['degree']]}{npc_ref(tname)} avoids your attack.")
         elif at == "talk" and "talk" in r:
             out.append(self._talk_text(r, tname))
         elif ok and (r["state_changes"] or r["consequences"]) and at in ("take", "drop", "equip", "unequip", "use_item"):
@@ -682,23 +712,24 @@ class MockLLM:
 
     def _talk_text(self, r: Dict, tname: str) -> str:
         t = r["talk"]
-        the = "" if " " not in tname else "the "  # one-word names ("Mara") read without an article
-        out = [self.APPROACH_OPEN.get(t["approach"], "You speak with the {n}.").replace("the {n}", the + "{n}")
-               .format(n=tname)]
+        who = npc_ref(tname, (r.get("target") or {}).get("article"))
+        who_cap = npc_ref(tname, (r.get("target") or {}).get("article"), cap=True)
+        out = [self.APPROACH_OPEN.get(t["approach"], "You speak with the {n}.").replace("the {n}", "{n}")
+               .format(n=who)]
         if r["degree"] is not None or r["reason"] in ("auto_success",):
             x = (f"{self.DEGREE_WORD[r['degree']]}it lands." if r["outcome"] == "success"
                  else f"{self.FAIL_WORD[r['degree']]}it doesn't land.")
             out.append(x[0].upper() + x[1:])
         spoken = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] == t["npc"]]
         for d in spoken:  # verbatim, in order
-            out.append(f'"{d["line"]}" {the}{d["speaker_name"]} says.')
+            out.append(f'"{d["line"]}" {npc_ref(d["speaker_name"])} says.')
         self._dialogue = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] != t["npc"]]
         if not spoken:
             for a in t["allowed_topics"]:  # voice failed: brief indirect speech, topic text only
                 txt = a["text"].rstrip(".")
-                out.append(f"{(the + tname)[0].upper()}{(the + tname)[1:]} tells you that {txt[0].lower()}{txt[1:]}.")
+                out.append(f"{who_cap} tells you that {txt[0].lower()}{txt[1:]}.")
             if not t["allowed_topics"] and t["refused_topics"]:
-                out.append(f"{(the + tname)[0].upper()}{(the + tname)[1:]} won't be drawn on that.")
+                out.append(f"{who_cap} won't be drawn on that.")
             if t.get("trade") and not t["allowed_topics"]:
                 out.append({"offered": "They tell you what they have on offer." if t["trade"].get("options") is not None
                             else "They name their terms.", "completed": "The deal is struck.",
@@ -727,7 +758,7 @@ class MockLLM:
                              else f"The {c.get('name')} is gone from your pack."),
             "item_equipped": f"You ready the {c.get('name')}.",
             "item_unequipped": f"You put away the {c.get('name')}.",
-            "npc_defeated": f"The {c.get('name')} goes down and stays down.",
+            "npc_defeated": f"{npc_ref(c.get('name'), cap=True)} goes down and stays down.",
             "entity_state": {"lit": f"The {c.get('name') or 'light'} flares to life.",
                              "unlit": f"You put out the {c.get('name') or 'light'}.",
                              "open": "It comes open."}.get(c.get("to"), "It takes the blow."),
@@ -755,9 +786,9 @@ class MockLLM:
         if t == "condition_removed":
             return "The tonic's edge is spent." if c.get("reason") == "spent" else "You feel the affliction lift."
         if t == "npc_condition":
-            who = c.get("npc_name") or "target"
-            return (f"The {who} reels, {c.get('name')}!" if c.get("outcome") == "applied"
-                    else f"The {who} shields their eyes in time.")
+            who = npc_ref(c.get("npc_name") or "target", cap=True)
+            return (f"{who} reels, {c.get('name')}!" if c.get("outcome") == "applied"
+                    else f"{who} shields their eyes in time.")
         if t == "tool_used":
             return f"Your {c.get('name')} makes the work easier."
         if t == "perk_used":

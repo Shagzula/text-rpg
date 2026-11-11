@@ -220,3 +220,25 @@ def test_no_api_key_literals_in_source():
     import pathlib
     src = pathlib.Path(llm.__file__).read_text()
     assert "sk-" not in src
+
+
+
+def test_proper_name_npcs_take_no_article():
+    """v0.9: 'the Mara' is wrong; 'the Dozing Guard' / 'the unseen figure' are fine."""
+    assert llm.npc_ref("Mara") == "Mara"
+    assert llm.npc_ref("Mara", cap=True) == "Mara"
+    assert llm.npc_ref("Dozing Guard") == "the Dozing Guard"
+    assert llm.npc_ref("Dozing Guard", cap=True) == "The Dozing Guard"
+    assert llm.npc_ref("unseen figure") == "the unseen figure"
+    assert llm.npc_ref("a voice in the dark") == "a voice in the dark"
+    assert llm.npc_ref("Mara", article="the") == "the Mara"  # persona/result override
+    assert llm.npc_ref("Dozing Guard", article="") == "Dozing Guard"
+    m = llm.MockLLM()
+    assert m._npc_action_text({"name": "Mara", "action": "follow"}) == "Mara comes after you!"
+    assert m._npc_action_text({"name": "Dozing Guard", "action": "follow"}) == "The Dozing Guard comes after you!"
+    assert "the unseen figure comes after you" in m._npc_action_text({"name": "unseen figure", "action": "follow"}).lower()
+    attack = {"action_type": "attack", "status": "resolved", "outcome": "success", "degree": "clear",
+              "reason": "rolled", "last_ditch": False, "target": {"name": "Mara"},
+              "state_changes": [], "consequences": []}
+    assert "lands on Mara" in m._narrate_one(attack, {})
+    assert "the Mara" not in m._narrate_one(attack, {})

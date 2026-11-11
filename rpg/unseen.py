@@ -4,6 +4,7 @@ Context, engine results and narration carry only a sound (persona `dark_sound`, 
 one) and a stable opaque reference `npc_unseen_<id>` that the interpreter can target."""
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from . import effects, personas
@@ -24,12 +25,43 @@ def sound(conn, npc_row) -> str:
     return str(p.get("dark_sound") or GENERIC_SOUND)
 
 
+def is_ref(key: Optional[str]) -> bool:
+    return isinstance(key, str) and key.startswith(PREFIX) and key[len(PREFIX):].isdigit()
+
+
 def resolve(conn, key: Optional[str]) -> Optional[str]:
     """Map an opaque ref back to the NPC key; any other key is returned unchanged."""
-    if not isinstance(key, str) or not key.startswith(PREFIX) or not key[len(PREFIX):].isdigit():
+    if not is_ref(key):
         return key
     row = conn.execute("SELECT key FROM npcs WHERE id = ?", (int(key[len(PREFIX):]),)).fetchone()
     return row["key"] if row else key
+
+
+def _name_words(text: str) -> set:
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower().replace("_", " "))) - {"npc", "the", "a", "an"}
+
+
+def named_in_dark(conn, character_id: int, raw_key: Optional[str]) -> bool:
+    """True if `raw_key` is a real key or a name-like slug for a living unseen NPC here.
+
+    Opaque `npc_unseen_<id>` refs do not count: those are the supported way to target
+    someone you can only hear. Referring to them by name must not resolve (that would
+    confirm who they are) and must not waste a combat round (v0.9).
+    """
+    if not raw_key or is_ref(raw_key):
+        return False
+    hidden = {k: v for k, v in unseen_npcs(conn, character_id).items() if v.get("alive")}
+    if not hidden:
+        return False
+    if raw_key in hidden:
+        return True
+    want = _name_words(raw_key)
+    if not want:
+        return False
+    for key, info in hidden.items():
+        if want & (_name_words(info.get("name") or "") | _name_words(key)):
+            return True
+    return False
 
 
 def unseen_npcs(conn, character_id: int) -> Dict[str, Dict]:

@@ -454,11 +454,24 @@ class Turn:
             changes.append({"type": "flag_set", "key": flag, "value": True})
         return self.result(a, target=t, check=check, state_changes=changes)
 
+    def _npcs_here(self):
+        return self.conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id",
+                                 (self.loc_id,)).fetchall()
+
+    def unseen_name_question(self, verb: str = "attack") -> str:
+        """v0.9: the player named someone they can only hear. Never confirm the name;
+        ask by sound. Free (clarify), even when only one NPC is here."""
+        names = [f"the one making {unseen.sound(self.conn, n)}" for n in self._npcs_here()]
+        if len(names) == 1:
+            return f"You can't tell who that is in the dark. Do you mean {names[0]}?"
+        if len(names) > 1:
+            return "Who do you want to " + verb + ": " + ", ".join(names[:-1]) + " or " + names[-1] + "?"
+        return "You can't tell who that is in the dark."
+
     def default_npc_target(self, a, verb: str = "talk to") -> Tuple[Dict, Optional[str]]:
         """Bare 'talk' / 'attack' (BUG-R04, BUG-R4-01): the only living NPC here, visible or only heard;
         a question if there are several (unseen ones by their sound, never by name); else unchanged."""
-        npcs = self.conn.execute("SELECT * FROM npcs WHERE location_id = ? AND alive = 1 ORDER BY id",
-                                 (self.loc_id,)).fetchall()
+        npcs = self._npcs_here()
         if len(npcs) == 1:
             return {**a, "target": npcs[0]["key"]}, None
         if len(npcs) > 1:
@@ -876,7 +889,12 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
                 "time_passed": False}
     turn = Turn(conn, character_id, rng, _next_turn(conn, character_id))
     hidden = unseen.unseen_npcs(conn, character_id)  # v0.7.1: unseen at the start of the turn...
-    for a in prop["actions"]:
+    named_in_dark = set()
+    for i, a in enumerate(prop["actions"]):
+        # v0.9: a real key or a name-like slug for an unseen NPC is not resolved
+        # (that would confirm who they are) and becomes a free clarify by sound.
+        if unseen.named_in_dark(conn, character_id, a.get("target")):
+            named_in_dark.add(i)
         a["target"] = unseen.resolve(conn, a["target"])  # opaque refs target the NPC behind them
     npc_mark = effects.npc_condition_mark(conn)
     in_combat = effects.hostiles_here(conn, character_id)  # at the start of the turn
@@ -893,12 +911,17 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
         skipped = [_skip(a, "prior_clarify") for a in actions if a is not flagged]
     else:
         failed: List[Dict] = []
-        for a in actions:
+        for i, a in enumerate(actions):
             if question is not None:
                 skipped.append(_skip(a, "prior_clarify"))
                 continue
             if _depends_on(a, failed):
                 skipped.append(_skip(a, "prior_failure"))
+                continue
+            if i in named_in_dark:
+                verb = "talk to" if a["action_type"] == "talk" else "attack"
+                question = turn.unseen_name_question(verb)
+                results.append(turn.clarify(a))
                 continue
             if a["clarification_needed"]:
                 question = a["clarification_question"] or _generic_question([a["intent_summary"]])
