@@ -1,4 +1,4 @@
-# NPC persona template (ACCEPTED, contracts.md v0.5 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
+# NPC persona template (AGREED, contracts.md v0.6 §d; Nov 10, 2026 CST). Setting-neutral placeholder: rename when the setting is chosen.
 # Schema: content/npc_persona_schema.md. The engine loads this file. Only PUBLIC parts reach the voice prompt
 # (name, voice, traits, goals), plus the topic texts the engine allows on a given turn.
 # `secrets` and `insight_tell` are never sent to the voice prompt or the narrator, except as engine-approved text.
@@ -43,25 +43,31 @@ knowledge:                   # public topics: key -> label + text (the label is 
   gate_rules:
     label: "gate rules / opening hours / getting in"
     text: "The gate closes at dusk and opens at dawn. After dark, only those in the ledger may pass."
+    aliases: [the gate, gate, gate rules, closing time, when the gate closes, when the gate opens]
   the_road_beyond:
     label: "the road beyond the gate"
     text: "The road beyond forks after an hour's walk. The left fork is safer but longer."
+    aliases: [the road, road, the fork, the road ahead]
   missing_patrol:
     label: "the missing night patrol"
     text: "Two of the night patrol didn't report back last night. Last seen heading toward the old cellar."
+    aliases: [the patrol, patrol, night patrol, the night patrol]
   gatekeeper_self:
     label: "the gatekeeper himself / his name / his work"
     text: "He has kept this gate for eleven years and would like to retire somewhere quiet."
+    aliases: [yourself, you, your name, your work, the gatekeeper]
 
 secrets:                     # never revealed below min_band; min_band 'never' = never revealed at all
   side_entrance:
     label: "a way in besides the gate"
     text: "A drainage grate behind the stables is loose and leads inside the walls."
     min_band: allied
+    aliases: [side entrance, the drainage grate, grate]   # secret aliases are listed only once the secret is visible
   ledger_bribe:
     label: "the ledger being for sale"
     text: "For the right favour he will write a name into the ledger after hours."
     min_band: friendly
+    aliases: [the ledger, ledger, a name in the ledger]
   true_fear:
     label: "who he really answers to"
     text: "He suspects his superior arranged the patrol's disappearance."
@@ -77,21 +83,27 @@ reveal_by_band:              # CUMULATIVE: each band also includes everything li
 trades:                      # entries: {item: <template key>, qty: N, name?: display name (gives only, no digits)} or {gold: N}
                              # gives = what HE hands over. Coin entries are band-priced by the engine (pay x1.5 hostile ..
                              # x0.75 allied, round up; receive x0.5 .. x1.25, round down). Item entries are never scaled.
-                             # repeatable: true = can be done again; default false = one-time (then drops off the list).
+                             # repeatable: true = can be done again, up to 10 at once (action `quantity` 1-10);
+                             # default false = one-time (quantity must be 1; once done it stays listed with done: true).
+                             # aliases (optional, on topics, secrets and trades): exact phrases the interpreter may match.
   trade_whistle_for_rations:  # item-for-item, one-time
     label: "his spare signal whistle"
+    aliases: [whistle, spare whistle, the whistle]
     gives: [{item: item_signal_whistle, qty: 1}]
     wants: [{item: item_rations, qty: 1}]
-  trade_buy_rations:         # coin purchase, repeatable, with a display name for the given item
+  trade_buy_rations:         # coin purchase, repeatable (1-10 per request via the action's quantity), display name
     label: "a day's rations from the gate canteen"
+    aliases: [rations, ration, food, canteen rations]
     gives: [{item: item_rations, qty: 1, name: "Canteen Rations"}]
     wants: [{gold: 6}]
     repeatable: true
   trade_sell_rope:           # he buys from the player, one-time
     label: "buying a coil of rope for the watch"
+    aliases: [rope, my rope, sell rope]
     gives: [{gold: 8}]
     wants: [{item: item_rope, qty: 1}]
   trade_antidote_for_tonic:
     label: "an antidote vial from the guard stores"
+    aliases: [antidote, antidote vial]
     gives: [{item: item_antidote, qty: 1}]
     wants: [{item: item_bracing_tonic, qty: 1}]

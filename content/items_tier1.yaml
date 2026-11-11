@@ -1,9 +1,9 @@
-# Tier-1 Item Templates (v0.6, Nov 10, 2026 CST)
+# Tier-1 Item Templates (v0.7, Nov 10, 2026 CST)
 # Setting-neutral placeholder names: rename once Dan picks a setting. Item NAMES contain no digits;
 # quantities live in stats (quantity, length_ft, days...).
 # Mechanics follow D&D 5e baselines (DESIGN.md: 5e abilities/skills/proficiency).
-# Shape AGREED (matches contracts.md v0.5), see schemas_proposed.md section c. All templates load via rpg.db.add_item_template().
-# Engine-read stats keys (v0.5): damage, properties, range, proficiency, improvised_damage, effect, amount, condition,
+# Shape AGREED (matches contracts.md v0.6), see schemas_proposed.md section c. All templates load via rpg.db.add_item_template().
+# Engine-read stats keys (v0.6): damage, properties, range, proficiency, improvised_damage, effect, amount, condition,
 #   uses, check {skill, est_difficulty}, dc, use_sets_flag, base_ac, dex_cap, ac_bonus, enables, skill_bonus {skill, grants},
 #   duration, save {ability, est_difficulty}, condition_effect, condition_name.
 #   `effect` is an engine enum: heal | cure_condition | buff | condition | light | sustenance.
