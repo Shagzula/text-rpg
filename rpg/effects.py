@@ -309,10 +309,12 @@ def tick_npc_conditions(conn, applied_before: int) -> List[Dict]:
     out: List[Dict] = []
     conn.execute("UPDATE npc_conditions SET duration_turns = duration_turns - 1 "
                  "WHERE duration_turns IS NOT NULL AND id <= ?", (applied_before,))
-    for r in conn.execute("SELECT c.id, c.name, n.key, n.name AS npc_name FROM npc_conditions c "
-                          "JOIN npcs n ON n.id = c.npc_id WHERE c.duration_turns <= 0").fetchall():
-        conn.execute("DELETE FROM npc_conditions WHERE id = ?", (r["id"],))
-        out.append({"type": "npc_condition_expired", "key": r["key"], "npc_name": r["npc_name"], "name": r["name"]})
+    for r in conn.execute(
+            "SELECT c.id AS cond_id, c.name, n.id AS npc_id, n.key, n.name AS npc_name "
+            "FROM npc_conditions c JOIN npcs n ON n.id = c.npc_id WHERE c.duration_turns <= 0").fetchall():
+        conn.execute("DELETE FROM npc_conditions WHERE id = ?", (r["cond_id"],))
+        out.append({"type": "npc_condition_expired", "key": r["key"], "npc_name": r["npc_name"],
+                    **_article(conn, {"id": r["npc_id"]}), "name": r["name"]})
     return out
 
 

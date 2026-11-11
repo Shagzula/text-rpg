@@ -198,6 +198,14 @@ UNSEEN_WORDS = "unseen figure someone something somebody whoever noise sound voi
 GENERIC_SOUND = "something breathing nearby"  # = unseen.GENERIC_SOUND
 
 
+def named(obj: Optional[Dict], *name_keys: str, cap: bool = False, default: str = "foe") -> str:
+    """npc_ref from a result/context entry, always honouring a persona `article` override."""
+    obj = obj or {}
+    keys = name_keys or ("name", "npc_name", "speaker_name")
+    name = next((obj[k] for k in keys if obj.get(k)), default)
+    return npc_ref(name, obj.get("article"), cap=cap)
+
+
 def npc_ref(name: Optional[str], article: Optional[str] = None, *, cap: bool = False) -> str:
     """How to mention an NPC in mock narration.
 
@@ -410,7 +418,7 @@ class MockLLM:
             action.update(action_type="talk", skill=None, est_difficulty="medium", approach="gift", topic=None,
                           topic_text=None, items_used=[ikey] if ikey else [])
             nm = unseen_display_name(npc, npc_txt or "them")
-            action["intent_summary"] = f"Give the {subject} to {npc_ref(nm)}."
+            action["intent_summary"] = f"Give the {subject} to {npc_ref(nm, (npc or {}).get('article'))}."
             return
         if approach in ("persuade", "deceive", "intimidate", "insight") and subject:
             m = CITE_RE.search(subject)
@@ -450,7 +458,7 @@ class MockLLM:
         action.update(action_type="talk", skill=TALK_SKILL.get(approach), est_difficulty="medium",
                       approach=approach, topic=topic, topic_text=topic_text,
                       intent_summary=TALK_SUMMARY[approach].replace("the {npc}", "{npc}")
-                      .format(npc=npc_ref(name), about=about[:60]))
+                      .format(npc=npc_ref(name, (npc or {}).get("article")), about=about[:60]))
 
     def _door_target(self, phrase: str, context: Dict, pools):
         """Match a door-ish phrase; "the door"/"the lock" prefers the one locked exit, then
@@ -672,7 +680,7 @@ class MockLLM:
                  "down": "You crumple to the ground."}
 
     def _npc_action_text(self, a: Dict) -> str:
-        who = npc_ref(a.get("name") or "foe", a.get("article"), cap=True)
+        who = named(a, "name", cap=True)
         if a.get("action") == "follow":
             return f"{who} comes after you!"
         if a.get("action") == "none":
@@ -692,7 +700,7 @@ class MockLLM:
         if t == "condition_expired":
             return f"The feeling of being {e.get('name')} fades."
         if t == "npc_condition_expired":
-            return f"{npc_ref(e.get('npc_name'), cap=True)} is no longer {e.get('name')}."
+            return f"{named(e, 'npc_name', cap=True)} is no longer {e.get('name')}."
         if t == "light_burnt_out":
             return f"Your {e.get('name')} gutters and goes out."
         return ""
@@ -701,7 +709,7 @@ class MockLLM:
         loc = context.get("location") or {}
         parts = [f"You are in the {loc.get('name', 'unknown place')}. {loc.get('description', '')}".strip()]
         alive = [n for n in context.get("npcs_present", []) if n.get("status", "alive") == "alive"]
-        seen = [n["name"] for n in alive if n.get("visible", True)]
+        seen = [named(n) for n in alive if n.get("visible", True)]
         heard = [n.get("sound") for n in alive if not n.get("visible", True)]
         if seen:
             parts.append("You see " + _join(seen) + ".")
@@ -799,8 +807,12 @@ class MockLLM:
         elif at == "wait":
             out.append("You wait. Time passes.")
         elif at == "attack":
-            out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on {npc_ref(tname)}." if ok
-                       else f"{self.FAIL_WORD[r['degree']]}{npc_ref(tname)} avoids your attack.")
+            art = (r.get("target") or {}).get("article")
+            hit = npc_ref(tname, art)
+            miss_lead = self.FAIL_WORD[r["degree"]]
+            miss = npc_ref(tname, art, cap=not miss_lead)
+            out.append(f"{self.DEGREE_WORD[r['degree']]}your attack lands on {hit}." if ok
+                       else f"{miss_lead}{miss} avoids your attack.")
         elif at == "talk" and "talk" in r:
             out.append(self._talk_text(r, tname))
         elif ok and (r["state_changes"] or r["consequences"]) and at in ("take", "drop", "equip", "unequip", "use_item"):
@@ -838,7 +850,7 @@ class MockLLM:
             out.append(x[0].upper() + x[1:])
         spoken = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] == t["npc"]]
         for d in spoken:  # verbatim, in order
-            out.append(f'"{d["line"]}" {npc_ref(d["speaker_name"])} says.')
+            out.append(f'"{d["line"]}" {npc_ref(d["speaker_name"], (r.get("target") or {}).get("article"))} says.')
         self._dialogue = [d for d in getattr(self, "_dialogue", []) if d["speaker_key"] != t["npc"]]
         if not spoken:
             for a in t["allowed_topics"]:  # voice failed: brief indirect speech, topic text only
@@ -874,7 +886,7 @@ class MockLLM:
                              else f"The {c.get('name')} is gone from your pack."),
             "item_equipped": f"You ready the {c.get('name')}.",
             "item_unequipped": f"You put away the {c.get('name')}.",
-            "npc_defeated": f"{npc_ref(c.get('name'), cap=True)} goes down and stays down.",
+            "npc_defeated": f"{named(c, cap=True)} goes down and stays down.",
             "entity_state": {"lit": f"The {c.get('name') or 'light'} flares to life.",
                              "unlit": f"You put out the {c.get('name') or 'light'}.",
                              "open": "It comes open."}.get(c.get("to"), "It takes the blow."),
@@ -902,7 +914,7 @@ class MockLLM:
         if t == "condition_removed":
             return "The tonic's edge is spent." if c.get("reason") == "spent" else "You feel the affliction lift."
         if t == "npc_condition":
-            who = npc_ref(c.get("npc_name") or "target", cap=True)
+            who = named(c, "npc_name", cap=True, default="target")
             return (f"{who} reels, {c.get('name')}!" if c.get("outcome") == "applied"
                     else f"{who} shields their eyes in time.")
         if t == "tool_used":

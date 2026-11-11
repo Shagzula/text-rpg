@@ -50,6 +50,10 @@ def test_validate_proposal_fills_missing_talk_fields_on_older_payloads():
 
 # --- R6-03 persona article pass-through ----------------------------------------
 
+def _lines_naming(out: str, name: str):
+    return [ln for ln in out.replace(". ", ".\n").splitlines() if name in ln]
+
+
 def test_persona_article_reaches_context_results_and_narration(demo):
     conn, cid = demo
     go(demo, "loc_storeroom")
@@ -57,12 +61,35 @@ def test_persona_article_reaches_context_results_and_narration(demo):
     ctx = context.build_context(conn, cid)
     entry = next(n for n in ctx["npcs_present"] if n["key"] == "npc_dozing_guard")
     assert entry["name"] == "Gatekeeper" and entry["article"] == "the"
+    # A hit: every line that names them uses the override, including the player's attack line.
     r, out = say(demo, "attack the gatekeeper", 20, 6, 1, 1, 1)
     res = r["results"][0]
-    assert res["status"] == "resolved"
+    assert res["status"] == "resolved" and res["outcome"] == "success"
     assert res["target"]["name"] == "Gatekeeper" and res["target"]["article"] == "the"
-    assert "the Gatekeeper" in out or "The Gatekeeper" in out
+    assert "lands on the Gatekeeper" in out
+    for ln in _lines_naming(out, "Gatekeeper"):
+        assert "the Gatekeeper" in ln or "The Gatekeeper" in ln, ln
+        assert "on Gatekeeper" not in ln
     assert "the Mara" not in out
+    # A miss capitalizes at the start of the sentence and still carries the article mid-sentence.
+    conn.execute("UPDATE npcs SET current_hp = max_hp, alive = 1, disposition = 0 WHERE key = 'npc_dozing_guard'")
+    r, out = say(demo, "attack the gatekeeper", 1, 1, 1, 1)
+    assert r["results"][0]["status"] == "resolved" and r["results"][0]["outcome"] == "failure"
+    assert "Gatekeeper avoids your attack" in out
+    for ln in _lines_naming(out, "Gatekeeper"):
+        assert "the Gatekeeper" in ln or "The Gatekeeper" in ln, ln
+
+
+def test_empty_article_drops_the_on_the_players_attack_line(demo):
+    conn, cid = demo
+    go(demo, "loc_storeroom")
+    _set_article(conn, "npc_dozing_guard", "", name="Dozing Guard")
+    r, out = say(demo, "attack the dozing guard", 20, 6, 1, 1, 1)
+    assert r["results"][0]["status"] == "resolved"
+    assert "lands on Dozing Guard" in out
+    assert "lands on the Dozing Guard" not in out
+    for ln in _lines_naming(out, "Dozing Guard"):
+        assert "the Dozing Guard" not in ln, ln
 
 
 def test_persona_article_is_masked_when_the_npc_is_unseen(dark_guard):
