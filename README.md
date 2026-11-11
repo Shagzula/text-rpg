@@ -1,4 +1,4 @@
-# Text RPG engine (M1.5: talk and gold)
+# Text RPG engine (M2: real LLM clients)
 
 Hybrid text RPG: an LLM interprets free-form player actions and narrates; this Python +
 SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `docs/contracts.md`.
@@ -17,6 +17,10 @@ SQLite engine owns all state and rules. Spec: `../DESIGN.md`. JSON contracts: `d
 - `rpg/data/npcs/` - demo personas (Mara, the dozing guard)
 - `rpg/context.py` - `build_context(conn, character_id)`: the prompt context block; narration log
 - `rpg/llm.py` - `LLMClient` protocol, `MockLLM`, narration post-processing, provider factory (`RPG_LLM`)
+- `rpg/providers.py` - `OpenAIClient` / `AnthropicClient` (urllib, retries, redaction, dry-run)
+- `rpg/prompts.py` - loads the three prompts from `content/` and fills their context sections
+- `rpg/proposal_schema.py` - JSON Schema for the action proposal (`docs/action_proposal.schema.json`)
+- `rpg/unseen.py` - masks NPCs you can't see in the dark (sound + opaque ref)
 - `rpg/world.py` - built-in demo slice
 - `rpg/cli.py` / `rpg/__main__.py` - terminal turn loop (`python3 -m rpg`)
 - `tests/` - pytest suite
@@ -92,8 +96,52 @@ straight to that choice.
 |---|---|
 | `RPG_DB_PATH` | working save file (overridden by `--db`) |
 | `RPG_LLM` | `mock` (default), `openai`, `anthropic` (overridden by `--llm`) |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | read from the environment only, never stored in code. Real providers are stubs for now: they fail clearly without a key and raise `NotImplementedError` with one. |
-| `RPG_LLM_MODEL` | model name for a real provider |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | read from the environment only, never stored, logged or printed. Missing -> a clear error at start (unless dry-run). |
+| `RPG_OPENAI_MODEL` / `RPG_ANTHROPIC_MODEL` | model for every role of that provider |
+| `RPG_OPENAI_MODEL_INTERPRET` / `_NARRATE` / `_VOICE` (same for `RPG_ANTHROPIC_…`) | model for one role (wins over the above) |
+| `RPG_LLM_MODEL` | older fallback: one model for every role of whichever provider |
+| `RPG_LLM_DRY_RUN=1` | same as `--dry-run` |
+| `RPG_OPENAI_REASONING_EFFORT` | optional `reasoning.effort` for OpenAI (not sent by default) |
+| `RPG_ANTHROPIC_EFFORT` | `output_config.effort` for Anthropic (default `low` for interpret/voice, unset for narrate) |
+| `RPG_SETTING_SUMMARY` / `RPG_TONE_NOTES` | fill `{setting_summary}` / `{tone_notes}` (placeholder defaults until the setting is chosen) |
+
+## Real LLM providers (M2)
+```bash
+export OPENAI_API_KEY=...            # or ANTHROPIC_API_KEY=...
+python3 -m rpg --new --llm openai    # or --llm anthropic, or RPG_LLM=openai
+python3 -m rpg --new --llm anthropic --dry-run 2> requests.log   # no network, no key needed
+```
+- **OpenAI**: `POST /v1/responses`, structured outputs (`text.format: json_schema, strict: true`) for the
+  interpreter and NPC voice, plain text for narration; `store: false`. **Anthropic**: `POST /v1/messages`,
+  `anthropic-version: 2026-10-21`, JSON outputs (`output_config.format: json_schema`) for interpreter and
+  voice; the system prompt is marked `cache_control: ephemeral` (prompt caching). No temperature is sent
+  (that API version removed it; current OpenAI reasoning models ignore or reject it).
+- **Default models** (checked against the providers' model pages on 2026-11-10; override with the env vars):
+
+  | role | OpenAI | Anthropic |
+  |---|---|---|
+  | interpret (fast, structured) | `gpt-6-luna` | `claude-haiku-5-5` |
+  | voice_npc (fast, structured) | `gpt-6-luna` | `claude-haiku-5-5` |
+  | narrate (prose quality) | `gpt-6.1-sol` | `claude-sonnet-5-5` |
+- **Prompts** come from `content/interpreter_prompt.md`, `narrator_prompt.md`, `npc_voice_prompt.md`. The
+  part after `---` is the system prompt; its context section (with the `{placeholders}`) is filled from
+  `build_context()` / the engine result and sent as the user message, the rest is sent unchanged as the
+  system prompt (static, so it caches).
+- **Failures**: 60 s timeout; 408/409/429/5xx/529 and network errors are retried up to 3 times with
+  exponential backoff (0.5 s, 1 s, 2 s + jitter, capped at 8 s; `Retry-After` honoured up to the cap). Other
+  errors (401, 400, ...) fail at once. A failed interpreter call prints "(LLM provider not available: ...)"
+  and spends no turn; a failed narration falls back to the post-processor's fallback line; a failed voice
+  call gives no NPC lines (indirect speech). Non-JSON or off-schema proposals use the usual single re-prompt
+  (the bad output is sent back as the assistant turn, then the engine's error list).
+- **Dry run** (`--dry-run` / `RPG_LLM_DRY_RUN=1`): each request (URL, headers with the key replaced by
+  `***redacted***` or `<unset: …>`, exact JSON body) is printed to stderr, nothing is sent, and the mock
+  answers so you can keep playing. Works without a key.
+- **Cost** (rough, per turn, list prices on 2026-11-10): the system prompts are ~10k (interpreter),
+  ~12k (narrator) and ~4k (voice, talk turns only) tokens. OpenAI: interpreter on Luna ≈ $0.001, narration
+  on 6.1 Sol ≈ $0.025 + output ≈ $0.03/turn before cached-input discounts. Anthropic: Haiku 5.5 interpreter
+  ≈ $0.001-0.002, Sonnet 5.5 narration ≈ $0.03 on a cold cache and ≈ $0.004 once the system prompt is
+  cached (cache reads 5% on Sonnet 5.5; cache writes cost extra). Check the pricing pages before a long
+  session; set the cheaper model for narration via `RPG_*_MODEL_NARRATE` to cut cost.
 
 Mock mode (`rpg/llm.py: MockLLM`) maps text to proposals with deterministic keyword rules and narrates
 with templates. Narration ends with "What do you do?" (except when you die): a missing closing line is appended, and

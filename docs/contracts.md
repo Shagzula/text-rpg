@@ -1,4 +1,4 @@
-# JSON contracts (v0.7.1)
+# JSON contracts (v0.8)
 
 Status: **implemented** in `rpg/actions.py` (`process_action_proposal`), `rpg/context.py`
 (`build_context`), `rpg/effects.py` (NPC phase, light, tools, timers), `rpg/talk.py` + `rpg/personas.py`
@@ -584,6 +584,48 @@ falls back to indirect speech).
 9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
+
+## (e) LLM layer (v0.8)
+`LLMClient` (rpg/llm.py) is unchanged: `interpret(player_text, context, reprompt=None) -> proposal dict (or
+raw text)`, `narrate(result, context) -> str`, `voice_npc(persona_view, allowed_topics, payload, context) ->
+{"lines": [...]}` (or its JSON text). Providers: `RPG_LLM` / `--llm` = `mock` | `openai` | `anthropic`.
+
+- **Prompts:** loaded from the vendored `content/*_prompt.md`. System = the text after the `---` line with
+  its context section (`## Game context` / `## Setting and tone` up to the first `## Rules` / `## Hard
+  rules`) replaced by a pointer; user message = that section with `{placeholders}` filled (JSON values,
+  compact). Interpreter/narrator values: the `build_context()` fields, `player_text`, `setting_summary`,
+  `tone_notes`, and for the narrator `narration_result` = the engine result (incl. `dialogue`). Voice:
+  `npc` = `persona_view`, `talk` (no npc key, no insight_read), `player_text`, `recent_dialogue`.
+  Placeholders elsewhere in the prompts are references and stay as written.
+- **Interpreter output schema:** `docs/action_proposal.schema.json` (`rpg/proposal_schema.py`), generated
+  from the same constants as section (a)/(d): every field required, talk-only fields
+  (`approach`, `topic`, `topic_text`, `quantity`) nullable on all actions, `ooc` object-or-null,
+  `additionalProperties: false`. The 0-3 limit and talk rules stay with `validate_proposal`. Voice schema:
+  `{"lines": [string]}`. Narration: plain text, through `narrate_safely` (regenerate once, closing line).
+- **Re-prompt:** a non-JSON or invalid proposal -> the engine's `invalid_proposal.reprompt`; the client
+  resends with the bad output as an assistant turn and the reprompt as a user turn. Second failure -> no turn.
+- **OpenAI:** `POST https://api.openai.com/v1/responses`, `Authorization: Bearer $OPENAI_API_KEY`;
+  body `{model, instructions, input: [{role, content}], max_output_tokens, store: false, text.format?:
+  {type: json_schema, name, schema, strict: true}}`. Text = the `output_text` parts of `message` items;
+  a `refusal` part or no text -> `LLMError`.
+- **Anthropic:** `POST https://api.anthropic.com/v1/messages`, `x-api-key`, `anthropic-version:
+  2026-10-21`; body `{model, max_tokens, system: [{type: text, text, cache_control: ephemeral}], messages,
+  output_config?: {format?: {type: json_schema, schema}, effort?}}`. Text = the `text` blocks; none ->
+  `LLMError` (with `stop_reason`).
+- **Models:** per role (`interpret`, `narrate`, `voice`): `RPG_<P>_MODEL_<ROLE>` > `RPG_<P>_MODEL` >
+  `RPG_LLM_MODEL` > default (OpenAI `gpt-6-luna` / `gpt-6.1-sol` for narrate; Anthropic `claude-haiku-5-5`
+  / `claude-sonnet-5-5` for narrate).
+- **Keys:** environment only; missing -> `LLMConfigError` naming the variable (except in dry-run). Keys are
+  never logged, printed or included in errors (`redact`); `repr(client)` shows models only.
+- **HTTP:** stdlib `urllib`; 60 s timeout; retry 408/409/429/500/502/503/504/529 and network errors up to 3
+  times, backoff `min(8, 0.5 * 2^n) * (1..1.25)`, `Retry-After` honoured up to 8 s; anything else ->
+  `LLMError` at once. The CLI shows interpreter errors without spending a turn.
+- **Dry run:** `--dry-run` / `RPG_LLM_DRY_RUN=1`: print `{dry_run, provider, role, url, headers
+  (redacted), body}` per request to stderr, send nothing, answer with `MockLLM`. Works without a key.
+
+## Changes in v0.8
+1. Real `OpenAIClient` / `AnthropicClient` (section (e)), prompt loading from content, the generated
+   proposal schema, per-role models, dry-run. No engine rule changes (the v0.7.1 freeze holds).
 
 ## Changes in v0.7.1 (engine features FROZEN for the slice after this)
 1. Overwhelming NPC hits daze the player for 1 round (`npc_actions[].dazed`); the leather cap's once-per-rest
