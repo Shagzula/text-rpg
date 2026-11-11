@@ -838,6 +838,9 @@ def player_status(conn, character_id: int) -> Dict:
     return {"hp_band": rules.hp_band(ch["current_hp"], ch["max_hp"]), "conditions": names}
 
 
+FREE_REJECTIONS = frozenset({"unrecognized"})  # never cost a round, even in combat
+
+
 def process_action_proposal(conn, character_id: int, proposal, rng: Optional[random.Random] = None) -> Dict[str, Any]:
     """Validate and resolve one interpreter proposal. Returns one of:
     - {"error": "invalid_proposal", "errors": [...], "reprompt": str}  (nothing changed)
@@ -901,7 +904,10 @@ def process_action_proposal(conn, character_id: int, proposal, rng: Optional[ran
     # were all rejected or clarification requests cost nothing.
     time_passed = any(r["status"] == "resolved" for r in results)
     # v0.6 (Lead decision): in combat, a rejected action is a wasted round; hostiles still act.
-    wasted_round = not time_passed and bool(in_combat) and any(r["status"] == "rejected" for r in results)
+    # v0.6.1 (Lead): only a parsed-but-rejected action wastes the round; input the engine couldn't map at
+    # all (`unrecognized`: typos, nonsense) is free even in combat, like malformed input.
+    wasted_round = not time_passed and bool(in_combat) and any(
+        r["status"] == "rejected" and r.get("detail") not in FREE_REJECTIONS for r in results)
     time_passed = time_passed or wasted_round
     if time_passed:
         expired = effects.tick_npc_conditions(conn, npc_mark)

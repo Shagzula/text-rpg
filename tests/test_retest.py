@@ -427,3 +427,27 @@ def test_lead_guard_stats_unchanged(demo):
     g = demo[0].execute("SELECT defense_dc, max_hp, attack_bonus, damage, save_bonus FROM npcs "
                         "WHERE key = 'npc_dozing_guard'").fetchone()
     assert tuple(g) == (11, 12, 3, "1d6", 1)
+
+
+# --- retest 7edacf2 -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["attck guard", "xyzzy", "cast fireball"])
+def test_r3_01_unmapped_input_is_free_in_combat(demo, text):
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    r, out = say(demo, text)  # Script(): any guard roll would fail the test
+    assert r["results"][0]["detail"] == "unrecognized"
+    assert r["time_passed"] is False and "wasted_round" not in r and r["npc_actions"] == []
+    assert "precious moments" not in out
+
+
+@pytest.mark.parametrize("text, detail", [("talk to mara", "elsewhere"), ("rest", "enemies_present"),
+                                          ("go north", None)])
+def test_r3_01_parsed_rejections_still_waste_the_round(demo, text, detail):
+    go(demo, "loc_storeroom")
+    hostile_guard(demo)
+    r, _ = say(demo, text, 1)
+    assert r["results"][0]["status"] == "rejected" and r["results"][0]["detail"] != "unrecognized"
+    if detail:
+        assert r["results"][0]["detail"] == detail
+    assert r["wasted_round"] is True and [a["action"] for a in r["npc_actions"]] == ["attack"]

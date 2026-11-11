@@ -66,8 +66,9 @@ def test_bug02_unknown_text_is_rejected_without_spending_a_turn(tmp_path, text):
     g, out = play(tmp_path, text, "/quit")
     joined = "\n".join(out)
     assert "manage it" not in joined and "Nothing happens" in joined
-    # v0.6 (Lead): with a hostile here, an unmodellable action is a wasted round: time passes, it swings
-    assert turn_no(g.path) == 1 and "You lose precious moments" in joined
+    # v0.6.1 (Lead, BUG-R3-01): input the engine can't map is free even with a hostile here
+    assert turn_no(g.path) == 0 and "You lose precious moments" not in joined
+    assert g.rng.random() == random.Random(3).random()  # no dice were rolled
     with db.connect(g.path) as conn:
         ch = conn.execute("SELECT str_score FROM characters WHERE is_player = 1").fetchone()
         assert ch["str_score"] == 8  # nothing the text asked for happened

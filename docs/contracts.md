@@ -228,9 +228,18 @@ only what is sent) and listed in an optional top-level
 ### Time passing
 A turn **spends time only if at least one action resolved** (`time_passed: true`), or, v0.6 **DECIDED**
 (combat stalling), **if a living hostile NPC was in the player's room at the start of the turn and at least
-one action was rejected**: a wasted round (`wasted_round: true` at top level; time passes, hostiles act,
-timers tick, the turn counter advances). Clarify turns, malformed proposals (re-prompt errors) and OOC input
-never cost time, in or out of combat. Outside combat the rules below are unchanged. Then, after the
+one action was rejected** (v0.6.1: other than `unrecognized`, i.e. a parsed action the engine
+refused, such as `target_not_present`, `item_not_owned`, `no_new_leverage`, `enemies_present`): a wasted round (`wasted_round: true` at top level; time passes, hostiles act,
+timers tick, the turn counter advances). Clarify turns, malformed proposals (re-prompt errors), OOC input and,
+v0.6.1 (Lead, BUG-R3-01), input the engine couldn't map at all (`other` / `unrecognized`: typos such as
+`attck guard`, nonsense such as `xyzzy`) never cost time, in or out of combat.
+
+| turn contains | outside combat | hostile in the room at turn start |
+|---|---|---|
+| at least one resolved action | time passes | time passes |
+| only rejections, at least one parsed (not `unrecognized`) | free | **wasted round** (`wasted_round: true`) |
+| only `unrecognized` rejections | free | free |
+| clarify / malformed proposal / OOC / empty input | free | free | Outside combat the rules below are unchanged. Then, after the
 player's actions: NPC conditions tick (skipping ones applied this turn), the NPC phase runs
 (`npc_actions`), then player conditions and lights tick (`expired` lists both, in that order). If every action was
 rejected or clarifies, nothing else happens: the turn counter is handed back, no dice are rolled, no NPC
