@@ -30,6 +30,11 @@ TRADE_DELTA = 2
 MAX_TRADE_QTY = 10  # a trade may be repeated up to this many times in one action (repeatable trades only)
 
 
+RETRY_TURNS = 10        # a blocked social retry opens up again after this many turns
+SOCIAL_CAP = 49         # persuasion/deception alone can't lift disposition into allied (>= 50)
+SOCIAL_TRY_FLAG = "social_try:"
+
+
 class TalkReject(Exception):
     """Raised before any state change; actions.do_talk turns it into a validation rejection."""
 
@@ -142,7 +147,16 @@ def resolve(turn, a: Dict, t) -> Dict:
     if is_trade:
         _precheck_trade(turn, a, t, p, before)  # BUG-R2-02/03/04: rejections cost nothing
     check = None
+    try_key = None
     if skill:
+        # 5e no-retry rule (v0.6): the same approach on the same NPC and subject can't be rolled again
+        # until something changes: a new topic, an item offered, the NPC's disposition moved by
+        # something else, or RETRY_TURNS turns passing.
+        subject = a["topic"] or " ".join(str(a["topic_text"] or "").lower().split())
+        try_key = f"{SOCIAL_TRY_FLAG}{t.key}:{approach}:{subject}"
+        prev = db.get_flag(conn, try_key)
+        if prev and not _new_leverage(prev, turn.turn, disp, a["items_used"]):
+            raise TalkReject("impossible_action", "no_new_leverage")
         dc = personas.social_dc(p, skill, before) if p else turn.dc_for(a, t)
         check = turn.check(a, skill, dc)
     success = check.success if check else True
@@ -156,14 +170,18 @@ def resolve(turn, a: Dict, t) -> Dict:
             else "unknown",
             "allowed_topics": [], "refused_topics": [], "trade": None, "insight_read": None}
 
-    def set_disp(d):
+    def set_disp(d, social=False):
         nonlocal disp
         new = _clamp(disp + d)
+        if social and d > 0:  # v0.6: talk alone tops out at friendly; allied needs engine events
+            new = max(disp, min(new, SOCIAL_CAP))
         if new != disp:
             conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (new, npc["id"]))
             disp = new
 
-    set_disp(delta)
+    set_disp(delta, social=True)
+    if try_key:
+        db.set_flag(conn, try_key, {"turn": turn.turn, "disposition": disp, "items": sorted(a["items_used"])})
     after = rules.disposition_band(disp)
     # cowed: topics read one band above the band *before* the drop (else intimidation could never help)
     topic_band = personas.shift_band(before, 1) if approach == "intimidate" and success and check else after
@@ -200,6 +218,11 @@ def resolve(turn, a: Dict, t) -> Dict:
     r = turn.result(a, target=t, check=check, consequences=consequences, state_changes=changes)
     r["talk"] = talk
     return r
+
+
+def _new_leverage(prev: Dict, turn_no: int, disposition: int, items_used) -> bool:
+    return (turn_no - prev.get("turn", 0) >= RETRY_TURNS or disposition != prev.get("disposition")
+            or bool(set(items_used) - set(prev.get("items") or [])))
 
 
 def _precheck_trade(turn, a, t, p, band) -> None:

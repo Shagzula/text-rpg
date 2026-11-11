@@ -509,6 +509,7 @@ class MockLLM:
         "no_target": "There's no one here to talk to.",
         "needs_target": "Use it on what? On its own, it does nothing.",
         "no_effect": "Nothing happens.",
+        "no_new_leverage": "You've already tried that on them; without something new, it won't go differently.",
         "no_such_trade": "There's no such deal on offer here.",
         "trade_done": "That deal is already done; they won't make it again.",
         "trade_item_missing": "You don't have what that deal needs.",

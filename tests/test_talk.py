@@ -115,11 +115,13 @@ def test_persuade_uses_persona_dc_and_moves_disposition(g, caplog):
     assert not HIDDEN & set(walk_keys(r))
 
 
-def test_persuade_success_into_allied_reveals_allied_secret(g):
+def test_persuasion_caps_at_friendly_but_allied_npc_reveals_allied_secret(g):
     g["conn"].execute("UPDATE npcs SET disposition = 40 WHERE key = 'npc_mara'")
     r = run(g, say("persuade", "cellar_lever"), rng=Script(20))["results"][0]
-    assert r["talk"]["disposition_band_after"] == "allied"
-    assert {"type": "npc_disposition_changed", "key": "npc_mara", "to": "allied"} in r["consequences"]
+    assert r["talk"]["disposition_band_after"] == "friendly" and disp(g) == 49  # v0.6 cap
+    assert r["talk"]["requested_topic_status"] == "unknown"
+    g["conn"].execute("UPDATE npcs SET disposition = 60 WHERE key = 'npc_mara'")  # an engine event made her allied
+    r = run(g, say("ask", "cellar_lever"))["results"][0]
     assert r["talk"]["requested_topic_status"] == "revealed"
 
 
@@ -141,13 +143,16 @@ def test_insight_success_reads_the_tell(g):
     r = run(g, say("insight"), rng=Script(20))["results"][0]
     p = personas.get(g["conn"], 1) or {}
     assert r["talk"]["insight_read"].startswith("Her eyes flick")
-    assert run(g, say("insight"), rng=Script(1))["results"][0]["talk"]["insight_read"] is None
+    assert run(g, say("insight", "the_cellar"), rng=Script(1))["results"][0]["talk"]["insight_read"] is None
 
 
-def test_disposition_clamps(g):
+def test_disposition_clamps_and_persuasion_never_lowers_an_allied_npc(g):
     g["conn"].execute("UPDATE npcs SET disposition = 95 WHERE key = 'npc_mara'")
     run(g, say("persuade"), rng=Script(20))
-    assert disp(g) == 100
+    assert disp(g) == 95  # capped social gain can't pull an allied NPC down either
+    g["conn"].execute("UPDATE npcs SET disposition = -95 WHERE key = 'npc_mara'")
+    run(g, say("intimidate"), rng=Script(1))
+    assert disp(g) == -100
 
 
 def test_attack_still_makes_hostile(g):
@@ -250,3 +255,67 @@ def test_trade_gives_can_name_the_instance(g):
     r = run(g, say("trade", "trade_buy_torch"))["results"][0]
     added = [c for c in r["state_changes"] if c["type"] == "item_added"][0]
     assert added["name"] == "Torch" and inv.get_item(g["conn"], added["key"])["name"] == "Torch"
+
+
+
+# --- v0.6: 5e no-retry rule and the social cap -------------------------------------------------
+
+def test_no_retry_same_approach_same_topic(g):
+    r = run(g, say("persuade", "the_cellar"), rng=Script(2))["results"][0]
+    assert r["status"] == "resolved"
+    res = run(g, say("persuade", "the_cellar"))
+    r = res["results"][0]
+    assert (r["status"], r["reason"], r["detail"]) == ("rejected", "impossible_action", "no_new_leverage")
+    assert res["time_passed"] is False  # no dice were scripted: nothing rolled
+
+
+def test_retry_allowed_after_success_too_blocked(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(20))
+    assert run(g, say("persuade", "the_cellar"))["results"][0]["detail"] == "no_new_leverage"
+
+
+def test_new_topic_or_other_approach_is_new_leverage(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    assert run(g, say("persuade", "market_news"), rng=Script(2))["results"][0]["status"] == "resolved"
+    assert run(g, say("deceive", "the_cellar"), rng=Script(2))["results"][0]["status"] == "resolved"
+
+
+def test_offering_an_item_is_new_leverage(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    r = run(g, say("persuade", "the_cellar", items=["item_rations"]), rng=Script(2))["results"][0]
+    assert r["status"] == "resolved"
+    assert run(g, say("persuade", "the_cellar", items=["item_rations"]))["results"][0]["detail"] == "no_new_leverage"
+
+
+def test_disposition_changed_elsewhere_is_new_leverage(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    run(g, say("trade", "trade_buy_torch"))  # +2: an engine event
+    assert run(g, say("persuade", "the_cellar"), rng=Script(2))["results"][0]["status"] == "resolved"
+
+
+def test_retry_opens_after_ten_turns(g):
+    run(g, say("persuade", "the_cellar"), rng=Script(2))
+    for _ in range(talk.RETRY_TURNS - 2):  # tried on turn 1; turns 2-9 pass; turn 10 would be too soon
+        run(g, {"action_type": "wait", "intent_summary": "Wait."})
+    assert run(g, say("persuade", "the_cellar"))["results"][0]["detail"] == "no_new_leverage"
+    run(g, {"action_type": "wait", "intent_summary": "Wait."})
+    assert run(g, say("persuade", "the_cellar"), rng=Script(2))["results"][0]["status"] == "resolved"
+
+
+def test_free_text_subjects_count_as_topics(g):
+    run(g, say("deceive", topic_text="being the new kitchen hand"), rng=Script(2))
+    assert run(g, say("deceive", topic_text="Being the  new kitchen hand"))["results"][0]["detail"] == "no_new_leverage"
+    assert run(g, say("deceive", topic_text="a message from the merchant"), rng=Script(2))["results"][0]["status"] \
+        == "resolved"
+
+
+def test_persuasion_farming_cannot_reach_allied(g):
+    topics = ["the_cellar", "market_news", "the_storeroom", "mara_self", "guard_sleeps", None]
+    for i, tp in enumerate(topics):
+        run(g, say("persuade", tp, topic_text=None if tp else f"subject {chr(97 + i)}"), rng=Script(20))
+    assert disp(g) == talk.SOCIAL_CAP and personas.band_of(disp(g)) == "friendly"
+
+
+def test_ask_and_small_talk_are_not_rate_limited(g):
+    for _ in range(3):
+        assert run(g, say("ask", "the_cellar"))["results"][0]["status"] == "resolved"
