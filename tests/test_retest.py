@@ -522,3 +522,41 @@ def test_dark_scene_says_you_hear_npcs_not_see_them(demo):
     _, out = say(demo, "go down")
     assert "You see" not in out and "in the dark you hear Dozing Guard" in out
     assert "By touch you know of the Rusty lever" in out
+
+
+# --- v0.6.1 gifts through the mock ------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["give the crowbar to mara", "give mara the crowbar", "hand mara the crowbar",
+                                  "give the crowbar to mara as a gift"])
+def test_gift_phrasings_parse(demo, text):
+    conn, cid = demo
+    conn.execute("UPDATE items SET character_id = ?, location_id = NULL WHERE template_id = "
+                 "(SELECT id FROM item_templates WHERE key = 'item_crowbar')", (cid,))
+    p = llm_mod.MockLLM().interpret(text, build_context(conn, cid))
+    a = p["actions"][0]
+    assert (a["action_type"], a["approach"], a["target"], a["skill"]) == ("talk", "gift", "npc_mara", None)
+    assert a["items_used"] == ["item_crowbar"] and not p["unresolved_references"]
+
+
+def test_gift_takes_mara_past_friendly_through_the_cli_path(demo):
+    conn, cid = demo
+    conn.execute("UPDATE npcs SET disposition = 49 WHERE key = 'npc_mara'")
+    say(demo, "take crowbar")
+    r, out = say(demo, "give the crowbar to mara")
+    assert r["results"][0]["talk"]["gift"]["status"] == "accepted" and mara_disp(demo) == 69
+    assert "You hand over the Crowbar." in out and "on your side now" in out
+    r, out = say(demo, "give mara the boots")
+    assert r["results"][0]["talk"]["gift"]["status"] == "declined" and "hand it back" in out
+
+
+def test_buying_a_torch_at_49_no_longer_reaches_allied(demo):
+    demo[0].execute("UPDATE npcs SET disposition = 49 WHERE key = 'npc_mara'")
+    r, _ = say(demo, "buy a torch from mara")
+    assert r["results"][0]["talk"]["trade"]["status"] == "completed" and mara_disp(demo) == 49
+
+
+def test_gift_voice_lines_fit_the_gift(tmp_path):
+    g, out = play(tmp_path, "take crowbar", "give the crowbar to mara", "give mara the boots", "/quit", new=True)
+    joined = "\n".join(out)
+    assert "That's... kind of you." in joined and "I've no use for that." in joined
+    assert "Don't touch what you can't pay for." not in joined

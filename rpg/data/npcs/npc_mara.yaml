@@ -75,6 +75,8 @@ reveal_by_band:
   friendly:   {topics: [the_cellar, guard_sleeps], trades: [trade_buy_tonic]}
   allied:     {topics: [cellar_lever], trades: [trade_tonic_for_rope]}
 
+gifts: {item_crowbar: 20}         # v0.6.1: she has crates to open (uncapped; once per item)
+
 trades:
   trade_buy_rations:
     label: "a day's travel rations"

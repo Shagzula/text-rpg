@@ -360,3 +360,100 @@ def test_persuasion_farming_cannot_reach_allied(g):
 def test_ask_and_small_talk_are_not_rate_limited(g):
     for _ in range(3):
         assert run(g, say("ask", "the_cellar"))["results"][0]["status"] == "resolved"
+
+
+# --- v0.6.1 (Lead): every small gain caps at friendly; gifts and quest events can reach allied --------
+
+def held_key(g, template):
+    return g["conn"].execute("SELECT i.key FROM items i JOIN item_templates t ON t.id = i.template_id "
+                             "WHERE t.key = ? AND i.character_id = ? ORDER BY i.id DESC", (template, g["cid"])).fetchone()[0]
+
+
+def set_disp(g, v, key="npc_mara"):
+    g["conn"].execute("UPDATE npcs SET disposition = ? WHERE key = ?", (v, key))
+
+
+def gift(*items, npc="npc_mara"):
+    return say("gift", npc=npc, items=items, intent="Give a gift.")
+
+
+@pytest.mark.parametrize("start, end", [(48, 49), (49, 49), (60, 60)])
+def test_trade_bonus_is_capped_at_friendly(g, start, end):
+    set_disp(g, start)
+    r = run(g, say("trade", "trade_buy_torch"))["results"][0]
+    assert r["talk"]["trade"]["status"] == "completed" and disp(g) == end
+
+
+def test_valued_gift_reaches_allied_and_is_removed(g):
+    conn = g["conn"]
+    set_disp(g, 49)
+    crowbar = conn.execute("SELECT key FROM items WHERE template_id = (SELECT id FROM item_templates "
+                           "WHERE key = 'item_crowbar')").fetchone()[0]
+    conn.execute("UPDATE items SET character_id = ?, location_id = NULL WHERE key = ?", (g["cid"], crowbar))
+    r = run(g, gift(crowbar))
+    x = r["results"][0]
+    assert x["status"] == "resolved" and x["talk"]["gift"] == {
+        "status": "accepted", "items": [{"key": crowbar, "name": "Crowbar", "accepted": True}]}
+    assert disp(g) == 69 and x["talk"]["disposition_band_after"] == "allied"
+    assert {"type": "npc_disposition_changed", "key": "npc_mara", "to": "allied"} in x["consequences"]
+    assert x["state_changes"] == [{"type": "item_removed", "key": crowbar, "name": "Crowbar", "given_to": "npc_mara"}]
+    assert conn.execute("SELECT COUNT(*) FROM items WHERE key = ?", (crowbar,)).fetchone()[0] == 0
+    assert r["time_passed"] is True
+
+
+def test_costly_gift_above_threshold_counts(g):
+    held = held_key(g, "item_healing_draught")
+    set_disp(g, 45)
+    run(g, gift(held))
+    assert disp(g) == 45 + talk.GIFT_DELTA
+
+
+def test_cheap_unvalued_gift_is_declined_and_kept(g):
+    key = held_key(g, "item_travel_boots")  # value below the threshold, not in Mara's gifts
+    set_disp(g, 20)
+    x = run(g, gift(key))["results"][0]
+    assert x["talk"]["gift"]["status"] == "declined" and x["talk"]["gift"]["items"][0]["reason"] == "not_valued"
+    assert disp(g) == 20 and x["state_changes"] == []
+
+
+def test_own_stock_and_repeat_gifts_are_declined(g):
+    conn = g["conn"]
+    set_disp(g, 49)
+    conn.execute("UPDATE characters SET gold = 200")
+    assert run(g, say("trade", "trade_buy_tonic"))["results"][0]["talk"]["trade"]["status"] == "completed"  # she sells tonic (friendly), so she won't value it as a gift
+    tonic = held_key(g, "item_bracing_tonic")
+    x = run(g, gift(tonic))["results"][0]
+    assert x["talk"]["gift"]["items"][0]["reason"] == "own_stock" and disp(g) == 49
+    draught = held_key(g, "item_healing_draught")
+    run(g, gift(draught))
+    assert disp(g) == 59
+    db.add_item(conn, "item_healing_draught", character_id=g["cid"], key="item_second_draught")
+    x = run(g, gift("item_second_draught"))["results"][0]
+    assert x["talk"]["gift"]["items"][0]["reason"] == "already_given" and disp(g) == 59
+
+
+def test_gift_needs_a_held_item(g):
+    assert run(g, gift())["results"][0]["detail"] == "no_item"
+    x = run(g, gift("item_hanging_lamp"))["results"][0]  # in another room / not held
+    assert x["reason"] == "item_not_owned"
+
+
+def test_guard_values_rations(g):
+    to_store(g)
+    run(g, gift(held_key(g, "item_rations"), npc="npc_dozing_guard"))
+    assert disp(g, "npc_dozing_guard") == 15
+
+
+def test_story_events_are_uncapped(g):
+    set_disp(g, 45)
+    assert talk.story_disposition(g["conn"], "npc_mara", 20) == 65
+
+
+def test_persona_gifts_are_validated():
+    from rpg import yamlish
+    base = yamlish.load(personas.DEMO_PERSONA_DIR / "npc_mara.yaml")
+    keys = [t["id"] for t in demo.TEMPLATES]
+    assert personas.validate(dict(base), keys)["gifts"] == {"item_crowbar": 20}
+    for bad in ({"item_nope": 5}, {"item_rations": 0}, {"item_rations": 99}, ["item_rations"]):
+        with pytest.raises(personas.PersonaError):
+            personas.validate({**base, "gifts": bad}, keys)

@@ -83,6 +83,15 @@ def validate(p: Dict, template_keys: Iterable[str]) -> Dict:
                     bad(f"combat.damage {v!r} is not a dice expression")
             elif not isinstance(v, int) or (f in ("max_hp", "defense_dc") and v <= 0):
                 bad(f"combat.{f} must be an int" + (" > 0" if f in ("max_hp", "defense_dc") else ""))
+    gifts = p.get("gifts")
+    if gifts is not None:  # v0.6.1 engine extension: {template key: disposition gain 1..50}
+        if not isinstance(gifts, dict):
+            bad("gifts must be a map of item template key -> int")
+        for k, v in (gifts or {}).items():
+            if k not in keys:
+                bad(f"gifts lists unknown item template {k!r}")
+            if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 50:
+                bad(f"gifts.{k} must be an int 1..50")
     trades = p.get("trades") or {}
     for band, entry in rbb.items():
         entry = entry or {}

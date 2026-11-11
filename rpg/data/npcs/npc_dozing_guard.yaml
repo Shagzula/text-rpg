@@ -61,6 +61,8 @@ reveal_by_band:
   friendly:   {topics: [the_lever], trades: [trade_buy_flash_powder]}
   allied:     {topics: [], trades: []}
 
+gifts: {item_rations: 15}         # v0.6.1: a hungry night shift (uncapped; once per item)
+
 trades:
   trade_buy_flash_powder:
     label: "a packet of flash powder from the guard stores"

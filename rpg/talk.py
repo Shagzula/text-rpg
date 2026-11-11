@@ -17,7 +17,8 @@ from . import inventory as inv
 log = logging.getLogger("rpg.debug")
 
 APPROACH_SKILL = {"persuade": "persuasion", "deceive": "deception", "intimidate": "intimidation",
-                  "insight": "insight", "ask": None, "small_talk": None, "trade": None, "farewell": None}
+                  "insight": "insight", "ask": None, "small_talk": None, "trade": None, "farewell": None,
+                  "gift": None}
 SKILL_APPROACH = {v: k for k, v in APPROACH_SKILL.items() if v}
 NO_SUBJECT = ("small_talk", "farewell")
 # disposition deltas (npc_persona_schema.md): approach -> success/failure -> degree
@@ -27,11 +28,17 @@ DELTAS = {
     "intimidate": {True: {"narrow": -10, "clear": -10, "overwhelming": -15}, False: {"narrow": -10, "clear": -15, "overwhelming": -25}},
 }
 TRADE_DELTA = 2
+# v0.6.1 gifts (Lead): the only player-driven way past friendly. A persona's `gifts: {template: delta}` sets
+# what that NPC values; any other item worth >= GIFT_VALUE_THRESHOLD coins is worth GIFT_DELTA. Items the
+# NPC itself trades away are never valued, and each template moves an NPC only once.
+GIFT_VALUE_THRESHOLD = 50
+GIFT_DELTA = 10
+GIFT_FLAG = "gifted:"
 MAX_TRADE_QTY = 10  # a trade may be repeated up to this many times in one action (repeatable trades only)
 
 
 RETRY_TURNS = 10        # a blocked social retry opens up again after this many turns
-SOCIAL_CAP = 49         # persuasion/deception alone can't lift disposition into allied (>= 50)
+SOCIAL_CAP = 49         # small gains (social checks, trades) can't lift disposition into allied (>= 50)
 SOCIAL_TRY_FLAG = "social_try:"
 SOCIAL_LAST_FLAG = "social_last:"  # last subject per NPC + approach (paraphrases fold into it, BUG-R3-02)
 DETERMINERS = ("the ", "a ", "an ", "my ", "his ", "her ", "their ", "your ", "its ", "some ")
@@ -145,6 +152,8 @@ def resolve(turn, a: Dict, t) -> Dict:
     approach, skill = a["approach"], a["skill"]
     disp = npc["disposition"]
     before = rules.disposition_band(disp)
+    if approach == "gift":
+        return _gift(turn, a, t, p)
     is_trade = approach == "trade" or bool(p and a["topic"] in (p.get("trades") or {}))
     if is_trade:
         _precheck_trade(turn, a, t, p, before)  # BUG-R2-02/03/04: rejections cost nothing
@@ -176,16 +185,16 @@ def resolve(turn, a: Dict, t) -> Dict:
             else "unknown",
             "allowed_topics": [], "refused_topics": [], "trade": None, "insight_read": None}
 
-    def set_disp(d, social=False):
+    def set_disp(d):
         nonlocal disp
         new = _clamp(disp + d)
-        if social and d > 0:  # v0.6: talk alone tops out at friendly; allied needs engine events
+        if d > 0:  # v0.6/v0.6.1: every small gain (talk, trades) tops out at friendly; allied = gifts, quests
             new = max(disp, min(new, SOCIAL_CAP))
         if new != disp:
             conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (new, npc["id"]))
             disp = new
 
-    set_disp(delta, social=True)
+    set_disp(delta)
     if try_key:
         db.set_flag(conn, try_key, {"turn": turn.turn, "disposition": disp, "items": sorted(a["items_used"]),
                                     "revealed": sorted(known_now)})
@@ -226,6 +235,72 @@ def resolve(turn, a: Dict, t) -> Dict:
     r = turn.result(a, target=t, check=check, consequences=consequences, state_changes=changes)
     r["talk"] = talk
     return r
+
+
+def _gift(turn, a, t, p) -> Dict:
+    """approach "gift": hand over the items in `items_used` (held). Valued ones are accepted and removed,
+    moving disposition by their worth with **no** friendly cap (clamped to 100); the rest are declined
+    and kept. Declines: `own_stock` (the NPC trades that item away), `already_given` (that template
+    already moved this NPC), `not_valued` (not in the persona's gifts and worth < the threshold)."""
+    conn, cid = turn.conn, turn.cid
+    npc = t.row
+    if not a["items_used"]:
+        raise TalkReject("item_not_owned", "no_item")
+    held = {i["key"]: i for i in inv.list_inventory(conn, cid)}
+    if any(k not in held for k in a["items_used"]):
+        raise TalkReject("item_not_owned", "not_held")
+    valued = (p or {}).get("gifts") or {}
+    own_stock = {e["item"] for tr in ((p or {}).get("trades") or {}).values()
+                 for e in tr.get("gives") or [] if "item" in e}
+    disp = npc["disposition"]
+    before = rules.disposition_band(disp)
+    entries, changes, delta = [], [], 0
+    for k in dict.fromkeys(a["items_used"]):
+        i = held[k]
+        tk = i["template_key"]
+        flag = f"{GIFT_FLAG}{t.key}:{tk}"
+        reason, d = None, 0
+        if tk in own_stock:
+            reason = "own_stock"
+        elif db.get_flag(conn, flag):
+            reason = "already_given"
+        elif tk in valued:
+            d = valued[tk]
+        elif (i.get("value") or 0) >= GIFT_VALUE_THRESHOLD:
+            d = GIFT_DELTA
+        else:
+            reason = "not_valued"
+        entry = {"key": k, "name": i["name"], "accepted": reason is None}
+        if reason:
+            entry["reason"] = reason
+        else:
+            inv.remove_item(conn, k, 1)
+            changes.append({"type": "item_removed", "key": k, "name": i["name"], "given_to": t.key})
+            db.set_flag(conn, flag, True)
+            delta += d
+        entries.append(entry)
+    new = _clamp(disp + delta)  # gifts are not capped at friendly
+    if new != disp:
+        conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (new, npc["id"]))
+    after = rules.disposition_band(new)
+    consequences = [{"type": "npc_disposition_changed", "key": t.key, "to": after}] if after != before else []
+    log.debug("gift turn=%s npc=%s disposition %s -> %s", turn.turn, t.key, disp, new)
+    r = turn.result(a, target=t, check=None, consequences=consequences, state_changes=changes)
+    r["talk"] = {"npc": t.key, "approach": "gift", "topic": None, "topic_text": a["topic_text"],
+                 "disposition_band_before": before, "disposition_band_after": after,
+                 "requested_topic_status": "none", "allowed_topics": [], "refused_topics": [], "trade": None,
+                 "insight_read": None,
+                 "gift": {"status": "accepted" if any(e["accepted"] for e in entries) else "declined",
+                          "items": entries}}
+    return r
+
+
+def story_disposition(conn, npc_key: str, delta: int) -> int:
+    """Engine/quest events (not the player's words): change an NPC's disposition with no friendly cap."""
+    row = conn.execute("SELECT id, disposition FROM npcs WHERE key = ?", (npc_key,)).fetchone()
+    new = _clamp(row["disposition"] + delta)
+    conn.execute("UPDATE npcs SET disposition = ? WHERE id = ?", (new, row["id"]))
+    return new
 
 
 def _new_leverage(prev: Dict, turn_no: int, disposition: int, items_used, cited=()) -> bool:

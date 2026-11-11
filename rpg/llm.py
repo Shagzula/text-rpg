@@ -110,7 +110,8 @@ VERBS: List[Tuple[Tuple[str, ...], str]] = [
     (("open", "force", "kick", "break", "smash", "bash", "shove"), "force"),
     (("talk", "speak", "ask", "greet", "chat", "say", "hello", "hi", "persuade", "convince", "plead", "beg",
       "lie", "deceive", "bluff", "trick", "threaten", "intimidate", "menace", "read", "study", "sense",
-      "buy", "purchase", "sell", "trade", "barter", "haggle", "bye", "goodbye", "farewell"), "talk"),
+      "buy", "purchase", "sell", "trade", "barter", "haggle", "bye", "goodbye", "farewell", "give", "gift",
+      "hand"), "talk"),
 ]
 TALK_APPROACH_WORDS = {
     "persuade": "persuade", "convince": "persuade", "plead": "persuade", "beg": "persuade",
@@ -119,13 +120,15 @@ TALK_APPROACH_WORDS = {
     "read": "insight", "study": "insight", "sense": "insight",
     "buy": "trade", "purchase": "trade", "sell": "trade", "trade": "trade", "barter": "trade", "haggle": "trade",
     "bye": "farewell", "goodbye": "farewell", "farewell": "farewell",
+    "give": "gift", "gift": "gift", "hand": "gift",
     "greet": "small_talk", "hello": "small_talk", "hi": "small_talk", "chat": "small_talk",
 }
 TALK_SKILL = {"persuade": "persuasion", "deceive": "deception", "intimidate": "intimidation", "insight": "insight"}
 TALK_SUMMARY = {"ask": "Ask the {npc}{about}.", "persuade": "Try to persuade the {npc}{about}.",
                 "deceive": "Try to deceive the {npc}{about}.", "intimidate": "Try to intimidate the {npc}{about}.",
                 "insight": "Study the {npc} for what they are hiding{about}.", "small_talk": "Chat with the {npc}.",
-                "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}."}
+                "trade": "Trade with the {npc}{about}.", "farewell": "Say goodbye to the {npc}.",
+                "gift": "Give the {npc}{about}."}
 # v0.6.1 leverage in social talk: "..., now that I know about X" cites a topic (topic_text next to the topic);
 # "... with / offering / showing her the X" presents a held item (items_used).
 CITE_RE = re.compile(r"\s*,?\s*\b(?:now that i know about|since i know about|now i know about|citing|mentioning|"
@@ -286,7 +289,24 @@ class MockLLM:
         npcs = [n for n in context.get("npcs_present", []) if n.get("status") == "alive"]
         rest = re.sub(r"^(to|with|at)\s+", "", rest)
         npc_txt, subject = rest, ""
-        if approach == "trade" and first in ("buy", "purchase", "sell"):
+        if approach == "gift":
+            # "give the rations to mara" / "give mara the rations" / "hand mara the rations as a gift"
+            rest = re.sub(r"\s+as an? (gift|present|token)$", "", rest)
+            if " to " in f" {rest} ":
+                subject, _, npc_txt = rest.rpartition(" to ")
+            else:
+                npc_txt, subject = rest, ""
+                for n in context.get("npcs_present", []):
+                    for nm in sorted({n["name"].lower(), n["name"].lower().split()[-1]}, key=len, reverse=True):
+                        for pre in ("the ", ""):
+                            if rest.startswith(pre + nm + " "):
+                                npc_txt, subject = pre + nm, rest[len(pre + nm):].strip()
+                                break
+                        if subject:
+                            break
+                    if subject:
+                        break
+        elif approach == "trade" and first in ("buy", "purchase", "sell"):
             subject, _, npc_txt = rest.partition(" from ") if " from " in rest else rest.partition(" to ")
         else:
             for sep in SUBJECT_SPLITS:
@@ -305,6 +325,15 @@ class MockLLM:
         if approach == "trade" and subject:
             quantity, subject = _split_quantity(subject)
         cite, offered = None, []
+        if approach == "gift":
+            ikey, iamb = self._match(subject, context, ("inv",), "item") if subject else (None, [])
+            if iamb:
+                refs.append(subject)
+            action.update(action_type="talk", skill=None, est_difficulty="medium", approach="gift", topic=None,
+                          topic_text=None, items_used=[ikey] if ikey else [])
+            nm = npc["name"] if npc else (npc_txt or "them")
+            action["intent_summary"] = (f"Give the {subject} to " + (nm if " " not in nm else f"the {nm}") + ".")
+            return
         if approach in ("persuade", "deceive", "intimidate", "insight") and subject:
             m = CITE_RE.search(subject)
             if m:
@@ -432,6 +461,9 @@ class MockLLM:
                 lines.append("I've got " + _join([o["label"] for o in tr["options"]]) + ". What'll it be?")
             else:
                 lines.append(self.TRADE_LINE[tr["status"]].format(label=tr.get("label") or "that"))
+        elif talk.get("gift"):
+            lines.append("For me? That's... kind of you." if talk["gift"]["status"] == "accepted"
+                         else "Keep it. I've no use for that.")
         elif approach == "farewell":
             lines.append("Off with you, then.")
         elif approach == "small_talk":
@@ -542,6 +574,7 @@ class MockLLM:
         "no_target": "There's no one here to talk to.",
         "needs_target": "Use it on what? On its own, it does nothing.",
         "no_effect": "Nothing happens.",
+        "no_item": "You'd need to name something you're carrying.",
         "no_new_leverage": "You've already tried that on them; without something new, it won't go differently.",
         "no_such_trade": "There's no such deal on offer here.",
         "trade_done": "That deal is already done; they won't make it again.",
@@ -613,7 +646,8 @@ class MockLLM:
     APPROACH_OPEN = {"ask": "You put your question to the {n}.", "persuade": "You make your case to the {n}.",
                      "deceive": "You spin the {n} a story.", "intimidate": "You lean on the {n}.",
                      "insight": "You watch the {n} closely.", "small_talk": "You pass the time with the {n}.",
-                     "trade": "You talk trade with the {n}.", "farewell": "You take your leave of the {n}."}
+                     "trade": "You talk trade with the {n}.", "farewell": "You take your leave of the {n}.",
+                     "gift": "You hold out a gift to the {n}."}
     BAND_BODY = {"hostile": "They glare at you.", "unfriendly": "They eye you coldly.", "neutral": "",
                  "friendly": "They seem to warm to you.", "allied": "They lean in, on your side now."}
 
@@ -641,6 +675,12 @@ class MockLLM:
                             else "They name their terms.", "completed": "The deal is struck.",
                             "refused": "They shake their head.", "unaffordable": "You can't cover their price."}
                            [t["trade"]["status"]])
+        if t.get("gift"):
+            for e in t["gift"]["items"]:
+                if not e["accepted"]:
+                    out.append({"own_stock": f"They push the {e['name']} back; they've plenty of those.",
+                                "already_given": f"They wave off the {e['name']}; you've given them one already.",
+                                }.get(e.get("reason"), f"They glance at the {e['name']} and hand it back."))
         if t.get("insight_read"):
             out.append(t["insight_read"])
         if t["disposition_band_after"] != t["disposition_band_before"]:
@@ -652,7 +692,8 @@ class MockLLM:
         return {
             "exit_state": "The way opens.",
             "item_added": f"You take the {c.get('name')}.",
-            "item_removed": (f"You set down the {c.get('name')}." if c.get("to")
+            "item_removed": (f"You hand over the {c.get('name')}." if c.get("given_to")
+                             else f"You set down the {c.get('name')}." if c.get("to")
                              else f"Nothing is left of the {c.get('name')}." if c.get("from") == "scene"
                              else f"The {c.get('name')} is gone from your pack."),
             "item_equipped": f"You ready the {c.get('name')}.",

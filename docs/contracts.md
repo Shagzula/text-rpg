@@ -472,9 +472,23 @@ when `topic` is null). `validate_proposal()` keeps them; non-talk actions never 
     learned but not cited does not count; citing the same one twice doesn't either. Interpreter shape:
     "persuade Mara about the cellar, now that I know about his post" -> `topic: "the_cellar"`,
     `topic_text: "his post"`; "... with the rations" -> `items_used: ["item_rations"]`.
-- v0.6 **DECIDED** **social cap at friendly**: a positive disposition change from a social check (persuade,
-  deceive) never takes the NPC above 49 (top of `friendly`); `allied` is only reachable by other means
-  (quests, story events; trades' +2 is not a social check). An NPC already above 49 is never lowered by it.
+- v0.6 **DECIDED** **cap at friendly**, widened in v0.6.1 (Lead): **every small disposition gain** (a social
+  check's delta and a completed trade's +2) never takes the NPC above 49 (top of `friendly`). An NPC already
+  above 49 is never lowered by it. Only **gifts** (below) and **quest / story events** (engine API
+  `talk.story_disposition(conn, npc_key, delta)`, uncapped, clamped to -100..100) can raise an NPC to allied.
+- v0.6.1 **DECIDED** **gifts** (approach `gift`, no skill, no roll): the player hands over the items in
+  `items_used` (must be held, else `item_not_owned` / `not_held`; none -> `item_not_owned` / `no_item`).
+  Per item (each template once per NPC, world flag `gifted:<npc>:<template>`):
+  - valued if the persona's optional `gifts: {<template key>: gain 1..50}` lists it (that gain), or else if
+    the template's `value` >= 50 coins (`GIFT_VALUE_THRESHOLD`; gain `GIFT_DELTA` = 10);
+  - declined (item kept) as `own_stock` if the NPC gives that template in any of its trades (no buying a
+    gift from them to hand back), `already_given` if that template already moved this NPC, else
+    `not_valued`.
+  Accepted items are removed (`item_removed {key, name, given_to: <npc>}`) and their gains summed and
+  applied **without** the friendly cap. The talk block gets `"gift": {"status": "accepted" | "declined",
+  "items": [{key, name, accepted, reason?}]}`; `trade` is null and `requested_topic_status` is `none`. A gift
+  is a resolved action (time passes). `gifts` is engine-only (never in context or the voice prompt). Demo
+  personas: Mara values the crowbar (+20), the guard values rations (+15).
 - `insight` success -> `insight_read` = the persona's `insight_tell` (narrator only; the voice step never
   sees it).
 
@@ -538,6 +552,7 @@ falls back to indirect speech).
    about one not yet available gives `refused`.
 7. Demo personas live in `code/rpg/data/npcs/` (engine-owned), not in `content/`.
 8. v0.6: optional `aliases` on persona topics/secrets/trades; trade `quantity`; bare trade `options`.
+   v0.6.1: optional persona `gifts` map and talk approach `gift`.
 9. v0.6: `tools/validate_content.py` (vendored, adapted from `/workspace/validate_content.py`, which is
    untouched) treats inline schema-notation snippets (e.g. `{key, label}`) as notation, not JSON failures,
    and checks `validate_proposal`'s error tuple (the original's dict check never matched).
@@ -549,6 +564,8 @@ falls back to indirect speech).
 3. New leverage: citing (via `topic_text` next to the subject `topic`) a topic revealed since the last try.
 4. Content re-synced to the Story Designer's v0.6 (8 files); its inline snippets are now all JSON.
 5. `look` in the dark lists the felt items (see context).
+6. Lead: the friendly cap covers trades' +2 too; new `gift` approach (persona `gifts`, value threshold 50)
+   and `talk.story_disposition` are the only ways to allied.
 
 ## Changes since v0.5
 Retest of 9127044 (`playtest/2026-11-10-retest-9127044.md`):

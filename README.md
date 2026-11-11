@@ -57,7 +57,8 @@ priced in coins by band. Persuading, lying and intimidating roll against the per
 disposition; the engine decides what may be said, and a separate `voice_npc` LLM call only phrases it
 (the mock has a deterministic voice). If the voice call fails, the narrator reports the facts indirectly.
 You can't retry the same persuasion/lie/threat on the same subject without new leverage (10 turns, a
-changed attitude, or a new item), and talking someone up stops at friendly. `trade` alone lists the deals;
+changed attitude, or a new item), and talking or trading someone up stops at friendly; only a gift they value (`give the crowbar to
+mara`) or a story event takes them further. `trade` alone lists the deals;
 `buy 3 torches` trades a repeatable deal up to 10 times.
 
 Combat: hostile NPCs in your room attack once after your actions each turn (d20 + their attack bonus vs
